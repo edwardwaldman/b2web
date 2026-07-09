@@ -1,0 +1,3420 @@
+
+
+"use client";
+
+import React, { useState, useEffect, useRef, useLayoutEffect, useMemo} from 'react';
+// ... the rest of your B2Web code ...
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// b2website.list — SF screener (Step 1) · v3 "robust control panel"
+// The screener IS the page. No hero. Anonymous = SF cached; a free account
+// unlocks your own city's cached list; paid removes the caps.
+//
+// v3 architecture:
+// · 70/30 split. Table left, detail pane right. Pane hidden until needed.
+// · NO center modals, NO accounts. The right pane is business detail only.
+//   Every locked thing (power filter chips, custom stops, cache tag, export,
+//   location) opens one anchored "Go unlimited" popover directly under the
+//   element that was clicked. It compares Starter ($20/mo, 40 calls) against
+//   Unlimited ($200/mo, unlimited calls), billed monthly or yearly (20% off),
+//   each behind a 1-day card-required free trial with empty-field validation.
+//   Overlays: the rewarded ad, the auth modal, and the first-visit tour.
+// · Row vs cell actions: row blank space = hard select (pane). Name = Maps
+//   tab. Category/neighborhood tags = filter macros. Phone = silent copy
+//   with a green flash (no tel: dialog). Headers = sort.
+// · Keyboard: ↑/↓ rows, Enter focuses notes, C copies phone, W opens web
+//   presence, M opens map,
+//   Shift+Click multi-select (export upsell), Cmd/Ctrl+K location, Esc closes.
+// · Rewarded ad appends rows 21–40 in place. Demo timer is 5s, standing in
+//   for the 60s ad unit.
+// · The end-cap under the table is the pitch, always on: no more no-website
+//   businesses in the free slice, everyone mines the same Jun 5 snapshot,
+//   the real-time cache is the edge over competitors. FREE vs PAID compare
+//   plus the checkout CTA.
+// · Search bar (top center, "/" focuses): typeahead over the accessible pool
+//   by name, category, neighborhood, or street. Picking a result opens the
+//   business detail pane (status, metrics, reviews, address, distance). An
+//   empty result set pitches the paid full-city cache.
+// · Sort select in the count strip: Featured, low-to-high variants, newest
+//   listed, nearest first (asks for location if none), name. Column-header
+//   sorts still work and show as "Column sort".
+// · Detect my location is signup-gated for anonymous visitors: the popover's
+//   button opens the signup modal, and detection runs right after signIn.
+// · Locate: the Location button geolocates, finds the nearest city from a
+//   built-in table, and sorts rows nearest-first (free, pure client-side).
+//   A non-SF city pitches the paid city unlock, unless admin mode is on.
+// · ADMIN (fixed, bottom-right) is a QA switch: every paid gate becomes
+//   functional against the mock cache: custom filter inputs, CSV export,
+//   exclude-contacted, multi-category stacking, a radius filter (needs a
+//   located position), simulated real-time mode, alert arming, city relabel,
+//   and the row cap lifts so the full mock cache renders. The Showing count
+//   is click-to-edit in admin: type a target and it generates that many rows
+//   (deterministic synthetic businesses, up to a 5,000-row safety ceiling).
+// · Refresh (next to the cache tag) pulls "just listed" businesses: admin
+//   gets a short spin then 2-4 fresh no-website leads on top, sorted
+//   newest-first; anonymous gets the real-time pitch. The Listed column is
+//   a hash-stable recency metric (1d-2y); fresh rows show green minutes.
+// · Armed alerts push mock notifications: a small toast drops from the top
+//   center previewing a newly listed no-website business (nearest first when
+//   located), with "Open the full listing" jumping to the detail pane.
+// · Ads share one behavior (useAdMode): Cancel swaps in the Go-unlimited
+//   pitch, which auto-reverts to the ad after 5s. Slots: the in-feed table
+//   row, the bottom bar, and the business-page sidebar.
+// · 60s anonymous wall: the signup modal opens and cannot be dismissed
+//   (admin exempt, waits for the tour). Screenshot deterrent blurs the app
+//   on PrintScreen or focus loss (best effort; browsers cannot block OS
+//   captures). About lives in a right-edge tab. ArrowLeft closes the
+//   business page. The sort select leads the count strip; UTC clock top
+//   right in white.
+// · This pass: About/Help are top-right header buttons opening full pages.
+//   The wall fires at 2 minutes as a finviz-style full-page gate (Google,
+//   consent, email+password, then an emailed 6-digit code; registered
+//   emails route to log in; non Gmail/Outlook emails also need a phone).
+//   Admin = the top paid tier: no ads anywhere, no wall, no blur, an
+//   UNLIMITED chip, and the ADMIN switch stays above the blur layer. The
+//   search bar is absolutely centered. Business pages gain a Share button
+//   (copy link, post to X); notifications open the full page. A View
+//   toggle (Grid live, Map/Split locked) and a Credits/API/Queue/Cache
+//   readout fill the control rows. Signed-in users get a tier chip and an
+//   email menu (Manage account with a Stripe billing link, Log out).
+//   Checkout hands off to Stripe. A link footer (Affiliate through Do Not
+//   Sell) with the OpenStreetMap credit and copyright sits under the list
+//   and on business pages.
+// · First visit: a 4-slide tour overlay (status column, filters, row actions,
+//   then a signup page). No backdrop or Esc dismissal. On the signup slide
+//   the primary button sits exactly where Next was, so spam-clickers land on
+//   Sign up and get red required-field outlines; Continue as guest (left)
+//   finishes as anonymous. Completion is stored in localStorage.
+// · Accounts are a light prototype layer: Sign up / Log in buttons top-right,
+//   a centered email-only modal (referral code optional, provider circles as
+//   placeholders). Signing in flips a local flag; the magic link is unbuilt.
+//   Free account = the located city's cached list; paid stays the popover.
+//
+// Design system (unchanged from v2): Finviz dark slate, semantic colors only
+// (blue = interactive, red/amber/green = website-status LEDs), Trebuchet MS
+// system stack ~11.5px tabular-nums, no webfonts, radius 2, no em dashes.
+// Cache honesty everywhere: "of N in cache", "checked Jun 5" provenance.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BG = "var(--bg)";          // page
+const PANEL = "var(--panel)";       // control deck, count strip, pane
+const PANEL2 = "var(--panel-2)";      // inputs, hover, wells
+const SEL = "var(--sel)";         // hard-selected row
+const LINE = "var(--line)";        // hairlines
+const RULE = "var(--rule)";        // stronger structural rules
+const TEXT = "var(--text)";        // primary text
+const MUTED = "var(--muted)";       // labels, secondary
+const FAINT = "var(--faint)";       // ad placeholders, hints
+const RED = "var(--red)";         // NO WEBSITE — the lead signal
+const AMBER = "var(--amber)";       // third-party (Facebook/Instagram/Linktree)
+const GREEN = "var(--green)";       // has a standalone site / success flash
+const BLUE = "var(--blue)";        // links, focus, selection accent
+const BLUE_DEEP = "var(--blue-deep)";   // primary buttons
+
+// Pricing: two tiers, monthly or yearly (yearly = 20% off), 1-day free trial
+// on both (card required). "Calls" = crawl requests against the live cache.
+const PLANS = [
+  { id: "starter", name: "Starter", mo: 20, calls: "40 calls / mo",
+    feats: ["Real-time crawls", "No ads", "Power filters", "CSV export"] },
+  { id: "unlimited", name: "Unlimited", mo: 200, calls: "Unlimited calls",
+    feats: ["Everything in Starter", "No result caps", "Armed alerts", "Priority crawl queue"] },
+];
+const planPrice = (pl, billing) => (billing === "yr" ? Math.round(pl.mo * 0.8) : pl.mo);
+
+// ── Mock SF cache slice ──────────────────────────────────────────────────────
+// Streets match their neighborhoods on purpose — the demo only convinces if an
+// SF person can't catch it lying. status: "none" | "third" | "site"
+const DATA = [
+  { name: "Castro Classic Cuts",      cat: "Barber shop",    rev: 34,  addr: "489 Castro St",      hood: "Castro",            status: "none",                         phone: "(415) 555-0184" },
+  { name: "Mission Cut House",        cat: "Barber shop",    rev: 47,  addr: "2486 Mission St",    hood: "Mission",           status: "third", thirdKind: "Facebook",  phone: "(415) 555-0117" },
+  { name: "Geary Barber Co.",         cat: "Barber shop",    rev: 12,  addr: "718 Geary St",       hood: "Lower Nob Hill",    status: "none",                         phone: "(415) 555-0149" },
+  { name: "Outer Sunset Fades",       cat: "Barber shop",    rev: 8,   addr: "3214 Noriega St",    hood: "Outer Sunset",      status: "none",                         phone: "(415) 555-0102" },
+  { name: "Hayes Valley Hair Studio", cat: "Hair salon",     rev: 64,  addr: "552 Hayes St",       hood: "Hayes Valley",      status: "none",                         phone: "(415) 555-0125" },
+  { name: "Sunset Nails & Spa",       cat: "Nail salon",     rev: 41,  addr: "1916 Irving St",     hood: "Inner Sunset",      status: "third", thirdKind: "Instagram", phone: "(415) 555-0163" },
+  { name: "Richmond Auto Care",       cat: "Auto repair",    rev: 188, addr: "5812 Geary Blvd",    hood: "Outer Richmond",    status: "none",                         phone: "(415) 555-0140" },
+  { name: "Bernal Heights Plumbing",  cat: "Plumber",        rev: 312, addr: "431 Cortland Ave",   hood: "Bernal Heights",    status: "none",                         phone: "(415) 555-0191" },
+  { name: "Great Highway Market",     cat: "Grocery",        rev: 29,  addr: "4498 Judah St",      hood: "Outer Sunset",      status: "none",                         phone: "(415) 555-0158" },
+  { name: "Excelsior Shoe Repair",    cat: "Shoe repair",    rev: 19,  addr: "4623 Mission St",    hood: "Excelsior",         status: "none",                         phone: "(415) 555-0171" },
+  { name: "Clement Street Tailor",    cat: "Tailor",         rev: 16,  addr: "615 Clement St",     hood: "Inner Richmond",    status: "none",                         phone: "(415) 555-0133" },
+  { name: "Polk Street Cleaners",     cat: "Dry cleaner",    rev: 22,  addr: "1744 Polk St",       hood: "Nob Hill",          status: "third", thirdKind: "Facebook",  phone: "(415) 555-0107" },
+  { name: "Portola Hardware",         cat: "Hardware store", rev: 51,  addr: "2630 San Bruno Ave", hood: "Portola",           status: "none",                         phone: "(415) 555-0122" },
+  { name: "Valencia Upholstery",      cat: "Upholstery",     rev: 9,   addr: "1438 Valencia St",   hood: "Mission",           status: "none",                         phone: "(415) 555-0168" },
+  { name: "North Beach Locksmith",    cat: "Locksmith",      rev: 87,  addr: "566 Columbus Ave",   hood: "North Beach",       status: "third", thirdKind: "Linktree",  phone: "(415) 555-0151" },
+  { name: "Balboa Hot Pot",           cat: "Restaurant",     rev: 214, addr: "3608 Balboa St",     hood: "Outer Richmond",    status: "none",                         phone: "(415) 555-0195" },
+];
+
+// Rows 21–40, appended after the rewarded ad. Same street/hood discipline.
+const EXTRA = [
+  { name: "Taraval Wash & Fold",        cat: "Laundromat",      rev: 26,  addr: "2614 Taraval St",     hood: "Parkside",          status: "none",                         phone: "(415) 555-0203" },
+  { name: "Chenery Street Florist",     cat: "Florist",         rev: 14,  addr: "670 Chenery St",      hood: "Glen Park",         status: "none",                         phone: "(415) 555-0211" },
+  { name: "Ocean Avenue Tax Service",   cat: "Tax service",     rev: 31,  addr: "1530 Ocean Ave",      hood: "Ingleside",         status: "third", thirdKind: "Facebook",  phone: "(415) 555-0218" },
+  { name: "Noe Valley Pet Grooming",    cat: "Pet groomer",     rev: 73,  addr: "3961 24th St",        hood: "Noe Valley",        status: "none",                         phone: "(415) 555-0224" },
+  { name: "Divisadero Tire & Wheel",    cat: "Auto repair",     rev: 119, addr: "670 Divisadero St",   hood: "NoPa",              status: "none",                         phone: "(415) 555-0229" },
+  { name: "Leland Avenue Bakery",       cat: "Bakery",          rev: 21,  addr: "36 Leland Ave",       hood: "Visitacion Valley", status: "none",                         phone: "(415) 555-0233" },
+  { name: "Cole Valley Shoe Service",   cat: "Shoe repair",     rev: 11,  addr: "930 Cole St",         hood: "Cole Valley",       status: "none",                         phone: "(415) 555-0246" },
+  { name: "Judah Street Sushi",         cat: "Restaurant",      rev: 167, addr: "3906 Judah St",       hood: "Outer Sunset",      status: "third", thirdKind: "Instagram", phone: "(415) 555-0252" },
+  { name: "Bayview Auto Glass",         cat: "Auto repair",     rev: 44,  addr: "4810 3rd St",         hood: "Bayview",           status: "none",                         phone: "(415) 555-0257" },
+  { name: "Cortland Hardware",          cat: "Hardware store",  rev: 38,  addr: "600 Cortland Ave",    hood: "Bernal Heights",    status: "third", thirdKind: "Facebook",  phone: "(415) 555-0263" },
+  { name: "Lombard Mattress Outlet",    cat: "Furniture store", rev: 17,  addr: "2298 Lombard St",     hood: "Cow Hollow",        status: "none",                         phone: "(415) 555-0268" },
+  { name: "Ingleside Barber Lounge",    cat: "Barber shop",     rev: 52,  addr: "1432 Ocean Ave",      hood: "Ingleside",         status: "none",                         phone: "(415) 555-0274" },
+  { name: "Quintara Rooter & Plumbing", cat: "Plumber",         rev: 95,  addr: "2200 Quintara St",    hood: "Parkside",          status: "none",                         phone: "(415) 555-0285" },
+  { name: "Balboa Optical",             cat: "Optometrist",     rev: 27,  addr: "3821 Balboa St",      hood: "Outer Richmond",    status: "third", thirdKind: "Linktree",  phone: "(415) 555-0291" },
+  { name: "Persia Avenue Upholstery",   cat: "Upholstery",      rev: 6,   addr: "88 Persia Ave",       hood: "Excelsior",         status: "none",                         phone: "(415) 555-0296" },
+  { name: "Hyde Street Tailoring",      cat: "Tailor",          rev: 24,  addr: "1521 Hyde St",        hood: "Russian Hill",      status: "none",                         phone: "(415) 555-0302" },
+  { name: "Silver Terrace Grocery",     cat: "Grocery",         rev: 33,  addr: "1801 Silver Ave",     hood: "Silver Terrace",    status: "none",                         phone: "(415) 555-0307" },
+];
+
+const ALL_ROWS = [...DATA, ...EXTRA];
+const CATS = ["All categories", ...Array.from(new Set(ALL_ROWS.map((d) => d.cat))).sort()];
+const REVIEW_STOPS = [0, 5, 10, 25, 50, 100];
+const STAR_STOPS = [0, 3, 3.5, 4, 4.5];
+
+// Believable cache totals per category {t: total rows, l: strictly no website}
+const TOTALS = {
+  "All categories": { t: 24816, l: 9442 },
+  "Barber shop": { t: 212, l: 117 }, "Hair salon": { t: 318, l: 121 },
+  "Nail salon": { t: 247, l: 138 }, "Auto repair": { t: 156, l: 71 },
+  "Plumber": { t: 134, l: 77 }, "Bakery": { t: 98, l: 31 },
+  "Grocery": { t: 421, l: 260 }, "Shoe repair": { t: 23, l: 17 },
+  "Tailor": { t: 61, l: 39 }, "Dry cleaner": { t: 88, l: 52 },
+  "Dentist": { t: 402, l: 64 }, "Hardware store": { t: 34, l: 14 },
+  "Upholstery": { t: 18, l: 13 }, "Locksmith": { t: 42, l: 21 },
+  "Restaurant": { t: 4812, l: 1387 }, "HVAC": { t: 129, l: 58 },
+  "Laundromat": { t: 54, l: 36 }, "Florist": { t: 71, l: 29 },
+  "Tax service": { t: 63, l: 27 }, "Pet groomer": { t: 47, l: 22 },
+  "Optometrist": { t: 96, l: 18 }, "Furniture store": { t: 83, l: 35 },
+};
+
+const CHECKED = "Checked Jun 5"; // cache crawl date — matches "updated 6 days ago"
+const VERIFY = {
+  none: `No URL on its Google listing, OSM entry, or registry record. ${CHECKED}`,
+  Facebook: `Listed URL points to facebook.com. No standalone site. ${CHECKED}`,
+  Instagram: `Listed URL points to instagram.com. No standalone site. ${CHECKED}`,
+  Linktree: `Listed URL points to linktr.ee. No standalone site. ${CHECKED}`,
+  site: `Standalone site responded OK. ${CHECKED}`,
+};
+
+// Value copy for locked power filters, shown in the right pane on click.
+const FEATURES = {
+  "Real-time data": "Free results come from the shared SF cache, last checked Jun 5. Paid runs a live crawl of your category and area on demand, so every row reflects what is online right now, with no 6-day lag.",
+  "Custom filters": "Set any minimum review count or star rating with a slider instead of the fixed presets. Dial lead quality to the exact threshold you want.",
+  "Radius / Draw area": "Draw your service area on a map and screen only inside it. Stop scrolling past leads you would never drive to.",
+  "Multiple categories": "Stack every trade you serve into one view: plumbers, HVAC, electricians in a single pass.",
+  "Exclude contacted": "Mark a lead as contacted once and it stays hidden in every future search. No double outreach, no spreadsheet cross-checking.",
+  "Alerts": "Get an email when a new no-website business appears in your categories and area.",
+  "Compare businesses": "Open several businesses side by side and work them at once instead of one pane at a time.",
+  "Saved lists": "Group leads into named lists (Barbers, Follow-ups, Won) and jump back to them any time.",
+  "Contact enrichment": "Pull owner names, emails, and socials on top of the phone so you can reach a person, not a front desk.",
+  "Duplicate filter": "Collapse the same business listed twice across sources into one clean row.",
+};
+
+const STATUS_META = {
+  none: { c: RED, label: "No website", order: 0 },
+  third: { c: AMBER, label: "only", order: 1 }, // prefixed with platform name
+  site: { c: GREEN, label: "Has site", order: 2 },
+};
+
+// ── Tiny stroke icons (no dingbats, no emoji) ────────────────────────────────
+function Icon({ k, size = 12, fill = "none" }) {
+  const p = {
+    play: <path d="M8 5.5v13l11-6.5z" />,
+    x: <path d="M6 6l12 12M18 6L6 18" />,
+    target: <><circle cx="12" cy="12" r="6.5" /><path d="M12 2.5v3.5M12 18v3.5M2.5 12H6M18 12h3.5" /></>,
+    refresh: <><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6" /><path d="M20.5 2.5v4.2h-4.2" /></>,
+    copy: <><rect x="9" y="9" width="11" height="11" rx="1.6" /><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" /></>,
+    search: <><circle cx="11" cy="11" r="6.5" /><path d="M20.5 20.5l-4.6-4.6" /></>,
+    share: <><path d="M4 12.5v6A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-6" /><path d="M12 14.5V3.5M7.5 7.5 12 3l4.5 4.5" /></>,
+    user: <><circle cx="12" cy="8" r="4" /><path d="M4 20a8 8 0 0 1 16 0" /></>,
+    expand: <><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></>,
+    bell: <><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6" /><path d="M10.5 19.5a2 2 0 0 0 3 0" /></>,
+    sun: <><path d="M7 17a5 5 0 0 1 10 0" /><path d="M3 17h18" /><path d="M12 3.5v2.2M6 8.4l1.5 1.5M18 8.4l-1.5 1.5M2.5 13.5h2.2M19.3 13.5h2.2" /></>,
+    moon: <path d="M20.5 14.8A8.2 8.2 0 0 1 9.2 3.5a8.2 8.2 0 1 0 11.3 11.3z" />,
+  }[k];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {p}
+    </svg>
+  );
+}
+
+// Shared ad behavior: Cancel swaps in the Go-unlimited pitch, which
+// auto-reverts to the ad after 5s unless the person acts on it.
+const useAdMode = () => {
+  const [m, setM] = useState("ad"); // "ad" | "pitch"
+  useEffect(() => {
+    if (m !== "pitch") return;
+    const t = setTimeout(() => setM("ad"), 5000);
+    return () => clearTimeout(t);
+  }, [m]);
+  return [m, setM];
+};
+
+function Lock() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"
+      style={{ marginLeft: 6, opacity: 0.55, flexShrink: 0, display: "block" }} aria-hidden="true">
+      <rect x="5" y="11" width="14" height="9" rx="1.5" />
+      <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+    </svg>
+  );
+}
+
+function Caret({ dir }) {
+  return (
+    <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"
+      style={{ marginLeft: 4, transform: dir === "asc" ? "rotate(180deg)" : "none" }}>
+      <path d="M12 17l-7-9h14z" />
+    </svg>
+  );
+}
+
+function statusBits(d) {
+  const m = STATUS_META[d.status] || STATUS_META.site;
+  const label = d.status === "third" ? `${d.thirdKind || "Social"} only` : m.label;
+  const tip = d.status === "third" ? (VERIFY[d.thirdKind] || VERIFY.Facebook) : VERIFY[d.status];
+  return { c: m.c, label, tip };
+}
+
+function Status({ d }) {
+  const { c, label, tip } = statusBits(d);
+  return (
+    <span style={S.status} title={tip}>
+      <span style={{ color: d.status === "site" ? MUTED : c, fontWeight: 700 }}>{label}</span>
+    </span>
+  );
+}
+
+const mapHref = (d) =>
+  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${d.name} ${d.addr} San Francisco CA`)}`;
+const mapEmbed = (d) =>
+  `https://www.google.com/maps?q=${encodeURIComponent(`${d.addr}, San Francisco, CA`)}&output=embed`;
+// Web presence. Mock rows carry no real URLs, so this resolves to a scoped
+// Google search that lands on whatever the business actually has — their site,
+// their social page, or just the Google listing that proves there's no site.
+// Production stores the listed URL and opens it directly.
+const webHref = (d) => {
+  const plat = d.status === "third" && d.thirdKind ? ` ${d.thirdKind}` : "";
+  return `https://www.google.com/search?q=${encodeURIComponent(`"${d.name}" ${d.hood} San Francisco${plat}`)}`;
+};
+
+// Live viewer count per business (deterministic). Low numbers are the prize:
+// fewer agencies looking at that lead right now.
+const viewersOf = (d) => 1 + (hashStr(d.name + "watch") % 48);
+
+const bizUrl = (d) => "https://b2web.site/business/" + d.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+// ── Deterministic mock metrics (stable per business) ────────────────────────
+const hashStr = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+// Ratings span 1.0–5.0 but cluster in 3–5; only ~1 in 8 falls below 3.0.
+const ratingOf = (d) => {
+  const h = hashStr(d.name + "rt");
+  if (h % 8 === 0) return Math.round((1 + (h % 20) / 10) * 10) / 10; // 1.0–2.9 (rare)
+  return Math.round((3 + (h % 21) / 10) * 10) / 10;                  // 3.0–5.0 (common)
+};
+const ageOf = (d) => 2 + (hashStr(d.name + "age") % 28); // stable 2–29 yrs listed
+// Ready-to-paste build prompt (Lovable, v0, Bolt) written from the row's data.
+const aiPromptOf = (d) => {
+  const presence = d.status === "none" ? "They currently have no website at all"
+    : d.status === "third" ? `Their only web presence is a ${d.thirdKind} page`
+    : "They have a standalone site that needs a rebuild";
+  return `Build a fast, mobile-first, single-page website for ${d.name}, a ${d.cat.toLowerCase()} in ${d.hood}, San Francisco (${d.addr}). ${presence}. They hold a ${ratingOf(d).toFixed(1)} star Google rating across ${d.rev} reviews, so lead with social proof: a reviews strip, a star badge, and two short testimonials. Sections: hero with a one-line value promise and a tap-to-call button (${d.phone}), services with prices, hours and location with an embedded map, and a booking or quote form. Tone: neighborhood-trusted, no stock-photo gloss. Ship clean semantic HTML, system fonts, one accent color, and LocalBusiness structured data for SEO.`;
+};
+
+// ── Geo: neighborhood lat/lng + haversine + nearest-city table ──────────────
+// Business position = hood centroid + tiny stable jitter. Production geocodes
+// the real address; the demo only needs believable relative distances.
+const HOOD_LL = {
+  "Castro": [37.7609, -122.4350], "Mission": [37.7599, -122.4148], "Lower Nob Hill": [37.7887, -122.4149],
+  "Outer Sunset": [37.7554, -122.4939], "Marina": [37.8021, -122.4369], "Hayes Valley": [37.7759, -122.4245],
+  "Inner Sunset": [37.7601, -122.4689], "Outer Richmond": [37.7776, -122.4939], "Bernal Heights": [37.7389, -122.4158],
+  "Glen Park": [37.7338, -122.4337], "Excelsior": [37.7239, -122.4311], "Inner Richmond": [37.7801, -122.4645],
+  "Nob Hill": [37.7930, -122.4161], "SoMa": [37.7785, -122.4056], "Portola": [37.7266, -122.4106],
+  "North Beach": [37.8060, -122.4103], "Lower Pac Heights": [37.7873, -122.4324], "Parkside": [37.7411, -122.4892],
+  "Ingleside": [37.7239, -122.4576], "Noe Valley": [37.7502, -122.4337], "NoPa": [37.7754, -122.4394],
+  "Visitacion Valley": [37.7134, -122.4041], "West Portal": [37.7407, -122.4664], "Cole Valley": [37.7659, -122.4501],
+  "Bayview": [37.7299, -122.3865], "Cow Hollow": [37.7972, -122.4389], "Russian Hill": [37.8014, -122.4189],
+  "Silver Terrace": [37.7368, -122.3993],
+};
+const llOf = (d) => {
+  const b = HOOD_LL[d.hood] || [37.7749, -122.4194];
+  return [b[0] + ((hashStr(d.name + "la") % 100) / 100 - 0.5) * 0.006,
+          b[1] + ((hashStr(d.name + "lo") % 100) / 100 - 0.5) * 0.006];
+};
+const hav = (a1, o1, a2, o2) => {
+  const R = 3958.8, r = Math.PI / 180;
+  const dA = (a2 - a1) * r, dO = (o2 - o1) * r;
+  const q = Math.sin(dA / 2) ** 2 + Math.cos(a1 * r) * Math.cos(a2 * r) * Math.sin(dO / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(q)); // miles
+};
+// Nearest-city detection is offline: geolocate, then pick the closest of
+// these. Enough to say "we found you near Boston" without a geocoding API.
+const CITIES = [
+  { n: "San Francisco, CA", lat: 37.7749, lng: -122.4194 }, { n: "Oakland, CA", lat: 37.8044, lng: -122.2712 },
+  { n: "San Jose, CA", lat: 37.3382, lng: -121.8863 }, { n: "Sacramento, CA", lat: 38.5816, lng: -121.4944 },
+  { n: "Los Angeles, CA", lat: 34.0522, lng: -118.2437 }, { n: "San Diego, CA", lat: 32.7157, lng: -117.1611 },
+  { n: "Las Vegas, NV", lat: 36.1699, lng: -115.1398 }, { n: "Portland, OR", lat: 45.5152, lng: -122.6784 },
+  { n: "Seattle, WA", lat: 47.6062, lng: -122.3321 }, { n: "Phoenix, AZ", lat: 33.4484, lng: -112.0740 },
+  { n: "Denver, CO", lat: 39.7392, lng: -104.9903 }, { n: "Dallas, TX", lat: 32.7767, lng: -96.7970 },
+  { n: "Austin, TX", lat: 30.2672, lng: -97.7431 }, { n: "Houston, TX", lat: 29.7604, lng: -95.3698 },
+  { n: "Chicago, IL", lat: 41.8781, lng: -87.6298 }, { n: "Minneapolis, MN", lat: 44.9778, lng: -93.2650 },
+  { n: "Detroit, MI", lat: 42.3314, lng: -83.0458 }, { n: "Atlanta, GA", lat: 33.7490, lng: -84.3880 },
+  { n: "Miami, FL", lat: 25.7617, lng: -80.1918 }, { n: "Washington, DC", lat: 38.9072, lng: -77.0369 },
+  { n: "Philadelphia, PA", lat: 39.9526, lng: -75.1652 }, { n: "New York, NY", lat: 40.7128, lng: -74.0060 },
+  { n: "Boston, MA", lat: 42.3601, lng: -71.0589 },
+];
+
+// ── Synthetic cache rows for admin volume testing ───────────────────────────
+// Deterministic per index so distances/ratings stay stable across renders.
+// Hoods come from HOOD_LL so llOf/haversine resolve; status is biased toward
+// "none" since this is a no-website screener. Names combine a place word, a
+// suffix noun, and the category, which keeps them unique and natural-looking
+// for the thousands of rows admin can request.
+const GEN_PLACES = ["Castro","Mission","Sunset","Richmond","Marina","Noe","Bernal","Portola","Excelsior","Glen Park","Hayes","Cole","Bayview","Ingleside","Parkside","Ocean","Balboa","Judah","Clement","Geary","Irving","Taraval","Divisadero","Fillmore","Polk","Hyde","Ulloa","Cortland","Lombard","Haight","Church","Valencia"];
+const GEN_SUFFIX = ["Studio","Co.","Works","Center","Shop","House","Express","Pro","Depot","Corner","Point","Hub","Room","Station","Collective","Group"];
+const GEN_CATS = ["Barber shop","Hair salon","Nail salon","Auto repair","Plumber","Bakery","Grocery","Shoe repair","Tailor","Dry cleaner","Dentist","Hardware store","Upholstery","Locksmith","Restaurant","HVAC","Laundromat","Florist","Tax service","Pet groomer","Optometrist","Furniture store","Electrician","Roofing","Landscaping","Pest control","Chiropractor","Cafe","Bar","Bookstore"];
+const GEN_STREETS = ["Mission St","Valencia St","Geary Blvd","Irving St","Clement St","Judah St","Taraval St","Ocean Ave","Balboa St","Noriega St","24th St","Church St","Divisadero St","Fillmore St","Polk St","Hyde St","Ulloa St","Cortland Ave","San Bruno Ave","3rd St","Columbus Ave","Chestnut St"];
+const GEN_THIRD = ["Facebook","Instagram","Linktree"];
+const GEN_HOODS = Object.keys(HOOD_LL);
+const genRow = (i) => {
+  const id = ALL_ROWS.length + i + 1;
+  const h = (salt) => hashStr("gen:" + id + ":" + salt);
+  const cat = GEN_CATS[h("cat") % GEN_CATS.length];
+  const r = h("stat") % 100;
+  let status = "none", thirdKind;
+  if (r >= 62) { status = "third"; thirdKind = GEN_THIRD[h("tk") % GEN_THIRD.length]; }
+  const name = `${GEN_PLACES[i % GEN_PLACES.length]} ${GEN_SUFFIX[Math.floor(i / GEN_PLACES.length) % GEN_SUFFIX.length]} ${cat}`;
+  return {
+    name, cat, rev: 5 + (h("rev") % 400),
+    addr: `${100 + (h("num") % 4899)} ${GEN_STREETS[h("st") % GEN_STREETS.length]}`,
+    hood: GEN_HOODS[h("hood") % GEN_HOODS.length],
+    status, ...(thirdKind ? { thirdKind } : {}),
+    phone: `(415) 555-${String(320 + (h("ph") % 9679)).padStart(4, "0")}`,
+  };
+};
+const GEN_MAX = 5000; // safety ceiling so the table doesn't lock the browser
+
+// ── "Listed" recency metric ─────────────────────────────────────────────────
+// Deterministic days-ago per business (1d–2y spread, hash-stable). Rows
+// injected by Refresh carry listedAgoMin (minutes) and render green.
+const listedMin = (d) =>
+  d.listedAgoMin != null ? d.listedAgoMin : (1 + (hashStr(d.name + "listed") % 720)) * 1440;
+const listedLabel = (d) => {
+  if (d.listedAgoMin != null) return d.listedAgoMin < 60 ? `${d.listedAgoMin}m ago` : `${Math.round(d.listedAgoMin / 60)}h ago`;
+  const days = 1 + (hashStr(d.name + "listed") % 720);
+  if (days < 14) return `${days}d ago`;
+  if (days < 60) return `${Math.round(days / 7)}w ago`;
+  if (days < 365) return `${Math.round(days / 30)}mo ago`;
+  return `${(days / 365).toFixed(1).replace(/\.0$/, "")}y ago`;
+};
+
+// ── Mock Google reviews (deterministic per business) ────────────────────────
+// A believable review dump the "copy all reviews" button pulls to clipboard.
+// Count tracks the listing's review number (capped for the sample); text is
+// stitched from parts so it reads like real Google reviews without repeating.
+const RV_NAMES = ["Marcus T.","Jenny L.","David R.","Priya S.","Carlos M.","Aisha K.","Tom W.","Linda H.","Sofia G.","Ben C.","Rachel N.","Kevin P.","Grace O.","Sam D.","Nina V.","Omar F.","Hannah B.","Leo M.","Yuki T.","Ana P."];
+const RV_OPEN = ["Been coming here for years", "Booked last minute", "First time customer", "My go-to spot", "Stopped in on a whim", "Local and loyal", "Found them on a recommendation", "Walked in off the street"];
+const RV_MID = ["and the staff were friendly and quick", "and the service was solid all around", "and they really know what they're doing", "and the pricing was fair", "and I was in and out fast", "and they went above and beyond", "and the quality was better than expected", "and the owner is genuinely great"];
+const RV_END = ["Highly recommend.", "Will be back.", "Can't beat it.", "Five stars.", "Tell your friends.", "Worth the trip.", "No complaints.", "Exactly what I needed."];
+const RV_LOW = ["Service was slow and a bit disorganized.", "Fine, but nothing special for the price.", "Had to wait way past my appointment time.", "Decent work but the communication was poor.", "Wanted to love it, left underwhelmed."];
+const reviewsOf = (d) => {
+  const total = Math.max(1, d.rev);
+  const n = Math.min(total, 12); // sample the most recent dozen
+  const rating = ratingOf(d);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const h = (salt) => hashStr(d.name + ":rv:" + i + ":" + salt);
+    const low = (h("stars") % 10) < 2 && rating < 4.5; // occasional 2-3 star
+    const stars = low ? 2 + (h("s") % 2) : 4 + (h("s") % 2);
+    const when = 1 + (h("when") % 51);
+    const whenL = when < 4 ? `${when} weeks ago` : `${Math.round(when / 4.3)} months ago`;
+    const body = low
+      ? RV_LOW[h("b") % RV_LOW.length]
+      : `${RV_OPEN[h("o") % RV_OPEN.length]} ${RV_MID[h("m") % RV_MID.length]}. ${RV_END[h("e") % RV_END.length]}`;
+    out.push({ author: RV_NAMES[h("nm") % RV_NAMES.length], stars, when: whenL, body });
+  }
+  return { total, sampled: n, list: out };
+};
+const reviewsText = (d) => {
+  const { total, sampled, list } = reviewsOf(d);
+  const head = `${d.name}, ${d.addr}, San Francisco, CA\nGoogle reviews: ${ratingOf(d).toFixed(1)}★, ${total} total (showing ${sampled} most recent)\n${"=".repeat(48)}\n`;
+  return head + list.map((r) => `${r.author}, ${"★".repeat(r.stars)}${"☆".repeat(5 - r.stars)}, ${r.when}\n${r.body}`).join("\n\n");
+};
+
+// Fresh rows for the Refresh action: generated off a high index band so they
+// never collide with admin volume rows, biased hard toward no-website.
+const freshRow = (k) => {
+  const base = genRow(10000 + k);
+  const r = hashStr("fr:" + k) % 100;
+  const status = r < 75 ? "none" : "third";
+  return {
+    ...base,
+    status,
+    ...(status === "third" ? { thirdKind: GEN_THIRD[hashStr("frk:" + k) % GEN_THIRD.length] } : {}),
+    listedAgoMin: 2 + (hashStr("fram:" + k) % 38),
+  };
+};
+
+export default function Screener() {
+  // filters + sort
+  const [cat, setCat] = useState("All categories");
+  const [minRev, setMinRev] = useState(0);
+  const [minStars, setMinStars] = useState(0);
+  const [hood, setHood] = useState(null);
+  const [onlyLeads, setOnlyLeads] = useState(false); // "No website only", paid-gated outside admin
+  const [sort, setSort] = useState({ key: "rev", dir: "desc" });
+
+  // selection + pane
+  const [selected, setSelected] = useState(null);       // business name (stable key)
+  const [multi, setMulti] = useState(() => new Set());  // shift+click set
+  const [pane, setPane] = useState({ mode: null });     // null | business
+
+  // data volume + ad
+  const [extra, setExtra] = useState(false); // rows 21–40 unlocked
+  const [adminRows, setAdminRows] = useState(null); // admin: forced cache size (generates rows)
+  const [fresh, setFresh] = useState([]);            // rows injected by Refresh (newly listed)
+  const [refreshing, setRefreshing] = useState(false);
+  const freshCount = useRef(0);
+  const [editRows, setEditRows] = useState(false);  // editing the Showing count inline
+  const [rowDraft, setRowDraft] = useState("");
+  const [adOpen, setAdOpen] = useState(false);
+  const [adLeft, setAdLeft] = useState(0);
+  const [inFeedMode, setInFeedMode] = useAdMode(); // in-table slot
+  const [inFeedCountdown, setInFeedCountdown] = useState(5);
+  const [pageAdMode, setPageAdMode] = useAdMode(); // business-page sidebar
+  const [inFeed2, setInFeed2] = useAdMode();       // second in-table slot
+
+  // anchored "Go unlimited" popover: {x, y, feature?} · one popover, many triggers
+  const [up, setUp] = useState(null);
+  const [upBilling, setUpBilling] = useState("mo"); // "mo" | "yr"
+  const [upTier, setUpTier] = useState(null);       // picked plan id, reveals trial form
+  const [upErr, setUpErr] = useState(false);
+
+  // location: geolocate -> nearest city + nearest-first sort
+  const [geo, setGeo] = useState(null);            // {lat, lng, city}
+  const [locPrompt, setLocPrompt] = useState(null); // {x, y} · "detect my location" popover
+  const locPromptRef = useRef(null);
+  const [pendingLoc, setPendingLoc] = useState(false); // detect requested pre-signup
+  const [pendingPlan, setPendingPlan] = useState(null); // plan chosen before signup
+
+  // top search bar: typeahead over the accessible pool, Enter or click opens
+  // the business detail pane (the per-business page)
+  const [bizPage, setBizPage] = useState(null); // full profile page (from search)
+  const [q, setQ] = useState("");
+  const [qOpen, setQOpen] = useState(false);
+  const [qIdx, setQIdx] = useState(0);
+  const searchWrapRef = useRef(null);
+  const [infoPage, setInfoPage] = useState(null); // null | "about" | "help" (full pages)
+  const [share, setShare] = useState(null);       // {x, y, biz} share popover
+  const [shareCopied, setShareCopied] = useState(false);
+  const shareRef = useRef(null);
+  const [acctMenu, setAcctMenu] = useState(false);
+  const acctRef = useRef(null);
+  const [acctOpen, setAcctOpen] = useState(false); // manage-account modal
+  const [acctOpen2, setAcctOpen2] = useState(false); // preferences modal
+  const [logoutAsk, setLogoutAsk] = useState(false);
+  const cityRef = useRef(null);
+  const [refReveal, setRefReveal] = useState(false); // "Referral code?" on signup
+  const [resendLeft, setResendLeft] = useState(0);   // code resend cooldown
+  const [viewers, setViewers] = useState(212);       // live "current viewers"
+  const [notifOpen, setNotifOpen] = useState(false);
+  const notifRef = useRef(null);
+  const [notifSeen, setNotifSeen] = useState(false);
+  const [apiInfo, setApiInfo] = useState(false);
+  const [tier, setTier] = useState("free");        // "free" | "starter" | "unlimited"
+  const [gateMode, setGateMode] = useState("signup"); // wall gate mode
+  const [gateEmail, setGateEmail] = useState(false);  // gate: email form revealed
+  const [gateConsent, setGateConsent] = useState(true);
+  const searchInputRef = useRef(null);
+  const [locCity, setLocCity] = useState("San Francisco, CA");
+  const [locating, setLocating] = useState(false);
+  const [geoMsg, setGeoMsg] = useState(null);
+
+  // admin QA switch (bottom-right): makes the paid gates functional
+  const [admin, setAdmin] = useState(() => {
+    try { return localStorage.getItem("b2w-admin") === "1"; } catch {}
+    return false;
+  });
+  const [revCustom, setRevCustom] = useState(false);
+  const [starsCustom, setStarsCustom] = useState(false);
+  const [contacted, setContacted] = useState(() => new Set());
+  const [excludeContacted, setExcludeContacted] = useState(false);
+  const [multiCatOn, setMultiCatOn] = useState(false);
+  const [compareOn, setCompareOn] = useState(false);
+  const [compare, setCompare] = useState(() => new Set()); // multi-select for Pro compare
+  const [view, setView] = useState("grid"); // "grid" | "split" | "trending"
+  const canCompare = admin || tier !== "free";
+  const cmpActive = canCompare && compareOn;
+  const toggleCmp = (name) => setCompare((s0) => { const n = new Set(s0); n.has(name) ? n.delete(name) : n.add(name); return n; });
+  const rootRef = useRef(null);
+  const [cats, setCats] = useState(() => new Set()); // stacked categories
+  const [radiusOn, setRadiusOn] = useState(false);
+  const [radiusMi, setRadiusMi] = useState(3);
+  const [rtOn, setRtOn] = useState(false);           // simulated live mode
+  const [ultra, setUltra] = useState(false);         // ULTRA demo: hyper-live stats
+  const [adminAsk, setAdminAsk] = useState(false);   // admin password modal
+  const [adminPw, setAdminPw] = useState("");
+  const [adminErr, setAdminErr] = useState(false);
+  const [alertOn, setAlertOn] = useState(false);     // armed alert (mock)
+  const [alertToast, setAlertToast] = useState(null); // {biz, ago} · dropped notification
+  const alertIdx = useRef(0);
+
+  // first-visit tour: step index 0-2, or null when done (stored)
+  const [tour, setTour] = useState(() => {
+    try { if (!localStorage.getItem("b2w-tour")) return 0; } catch {}
+    return null;
+  });
+
+  // misc ui
+  const [notes, setNotes] = useState({});
+  const [now, setNow] = useState(() => new Date()); // UTC clock in the header
+  const [guard, setGuard] = useState(false);        // screenshot blur (best effort)
+  const [copiedName, setCopiedName] = useState(null);
+  const [copiedRev, setCopiedRev] = useState(false);
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const [kPulse, setKPulse] = useState(false);
+  const [theme, setTheme] = useState(() => {
+    // OLED (pitch) is the first-visit default; a saved choice always wins.
+    try { const v = localStorage.getItem("b2w-theme"); if (v === "light" || v === "dark" || v === "pitch") return v; } catch {}
+    return "pitch";
+  });
+
+  // email is shared by auth and checkout. Auth is a prototype layer: signing
+  // in flips a local flag; the magic link and providers are unbuilt.
+  const [email, setEmail] = useState("");
+  const [authed, setAuthed] = useState(false);
+  const [authModal, setAuthModal] = useState(null); // null | "signup" | "login"
+  const [authPw, setAuthPw] = useState("");
+  const [authPhone, setAuthPhone] = useState("");
+  const [authCode, setAuthCode] = useState("");
+  const [authCode2, setAuthCode2] = useState(""); // referral code at signup
+  const [authStep, setAuthStep] = useState("form"); // "form" | "code"
+  const [authErr, setAuthErr] = useState("");
+  const [pwShake, setPwShake] = useState(false);
+  const [pendingCity, setPendingCity] = useState(null); // city awaiting free signup
+  const [wall, setWall] = useState(false); // 60s wall: signup cannot be dismissed
+  const walled = useRef(false);
+
+  const locRef = useRef(null);
+  const notesRef = useRef(null);
+  const rowRefs = useRef(new Map());
+  const upRef = useRef(null);
+
+  // Drive the palette from data-theme on <html> (vars cascade to body too).
+  // useLayoutEffect runs pre-paint so a light-mode visitor never flashes dark.
+  useLayoutEffect(() => {
+    try { document.documentElement.setAttribute("data-theme", theme); } catch {}
+    try { localStorage.setItem("b2w-theme", theme); } catch {}
+  }, [theme]);
+
+  const pool = useMemo(() => {
+    let base;
+    if (admin && adminRows != null) {
+      const n = Math.max(1, Math.min(adminRows, GEN_MAX));
+      if (n <= ALL_ROWS.length) base = ALL_ROWS.slice(0, n);
+      else {
+        const gen = []; for (let i = 0; i < n - ALL_ROWS.length; i++) gen.push(genRow(i));
+        base = ALL_ROWS.concat(gen);
+      }
+    } else {
+      base = admin || extra ? ALL_ROWS : DATA; // admin (no target): full mock cache
+    }
+    return fresh.length ? [...fresh, ...base] : base;
+  }, [admin, adminRows, extra, fresh]);
+
+  // "While you were away": newly listed no-website businesses you have not
+  // opened yet. Deterministic so the badge count is stable across renders.
+  const missed = useMemo(() => Array.from({ length: 6 }, (_, i) => freshRow(500 + i)), []);
+
+  const qMatches = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    if (!t) return [];
+    return pool
+      .filter((d) => `${d.name} ${d.cat} ${d.hood} ${d.addr}`.toLowerCase().includes(t))
+      .slice(0, 8);
+  }, [q, pool]);
+
+  const rows = useMemo(() => {
+    let r = pool.filter((d) => {
+      if (admin && multiCatOn && cats.size) { if (!cats.has(d.cat)) return false; }
+      else if (cat !== "All categories" && d.cat !== cat) return false;
+      if (minRev && d.rev < minRev) return false;
+      if (minStars && ratingOf(d) < minStars) return false;
+      if (hood && d.hood !== hood) return false;
+      if (onlyLeads && d.status !== "none") return false;
+      if (admin && excludeContacted && contacted.has(d.name)) return false;
+      if (admin && radiusOn && geo) {
+        const [la, lo] = llOf(d);
+        if (hav(geo.lat, geo.lng, la, lo) > radiusMi) return false;
+      }
+      return true;
+    });
+    const dirMul = sort.dir === "desc" ? -1 : 1;
+    const ord = (d) => STATUS_META[d.status].order;
+    r = [...r].sort((a, b) => {
+      let v = 0;
+      if (sort.key === "rev") v = a.rev - b.rev;
+      else if (sort.key === "rating") v = ratingOf(a) - ratingOf(b);
+      else if (sort.key === "name") v = a.name.localeCompare(b.name);
+      else if (sort.key === "addr") v = a.addr.localeCompare(b.addr);
+      else if (sort.key === "status") v = ord(a) - ord(b);
+      else if (sort.key === "views") v = viewersOf(a) - viewersOf(b);
+      else if (sort.key === "listed") v = listedMin(a) - listedMin(b);
+      else if (sort.key === "dist" && geo) v = hav(geo.lat, geo.lng, ...llOf(a)) - hav(geo.lat, geo.lng, ...llOf(b));
+      return v * dirMul;
+    });
+    return r;
+  }, [pool, cat, minRev, minStars, hood, onlyLeads, sort, geo, excludeContacted, contacted, admin, multiCatOn, cats, radiusOn, radiusMi]);
+
+  // Cache-wide totals, scaled down believably as min-reviews rises
+  const decay = Math.exp(-minRev / 70);
+  const base = TOTALS[cat] || TOTALS["All categories"];
+  const cacheTotal = Math.max(rows.length, Math.round((onlyLeads ? base.l : base.t) * decay));
+  const remaining = cacheTotal - rows.length;
+  const freeCap = extra ? 40 : 20;
+
+  const selBiz = selected ? ALL_ROWS.find((d) => d.name === selected) : null;
+
+  const toggleSort = (key) =>
+    setSort((s) => (s.key === key
+      ? { key, dir: s.dir === "desc" ? "asc" : "desc" }
+      : { key, dir: key === "rev" || key === "rating" ? "desc" : "asc" }));
+
+  const fmt = (n) => n.toLocaleString("en-US");
+
+  const copyPhone = (d) => {
+    if (navigator.clipboard) navigator.clipboard.writeText(d.phone).catch(() => {});
+    setCopiedName(d.name);
+    setTimeout(() => setCopiedName(null), 850);
+  };
+
+  const copyPrompt = (d) => {
+    if (navigator.clipboard) navigator.clipboard.writeText(aiPromptOf(d)).catch(() => {});
+    setCopiedPrompt(true);
+    setTimeout(() => setCopiedPrompt(false), 1400);
+  };
+
+  const copyReviews = (d) => {
+    const txt = reviewsText(d);
+    if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(() => {});
+    setCopiedRev(true);
+    setTimeout(() => setCopiedRev(false), 1400);
+  };
+
+  const selectRow = (d) => {
+    setSelected(d.name);
+    setPane({ mode: "business" });
+    setCopiedRev(false);
+  };
+  // Search opens the dedicated page, not the side pane.
+  const openBizPage = (d) => { setBizPage(d); setPane({ mode: null }); setCopiedRev(false); setCopiedPrompt(false); setPageAdMode("ad"); };
+
+  const rowClick = (e, d) => {
+    if (e.shiftKey) {
+      setMulti((m) => {
+        const n = new Set(m);
+        n.has(d.name) ? n.delete(d.name) : n.add(d.name);
+        return n;
+      });
+      return;
+    }
+    selectRow(d);
+  };
+
+  const resetAll = () => {
+    setCat("All categories"); setMinRev(0); setMinStars(0); setHood(null); setOnlyLeads(false);
+    setSort({ key: "rev", dir: "desc" });
+    setRevCustom(false); setStarsCustom(false); setExcludeContacted(false);
+    setMultiCatOn(false); setCats(new Set()); setRadiusOn(false);
+    setAdminRows(null); setEditRows(false);
+    setSelected(null); setMulti(new Set()); setPane({ mode: null });
+  };
+
+  // One popover for every upsell. It anchors under the clicked element
+  // (clamped to the viewport); `feature` optionally carries a {title, body}
+  // pitch that renders above the plan bullets.
+  const openUnlimited = (el, feature = null) => {
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth || 1200, vh = window.innerHeight || 800;
+    setUpTier(null); setUpErr(false);
+    setUp({
+      x: Math.max(8, Math.min(r.left, vw - 448)),
+      y: Math.max(8, Math.min(r.bottom + 6, vh - 420)),
+      feature,
+    });
+  };
+
+  // Trial start: email required here; payment details are collected on
+  // Stripe. The prototype opens Stripe checkout and starts the trial at
+  // that tier.
+  const startTrial = (plan) => {
+    if (!email.trim()) { setUpErr(true); return; }
+    // Logged-out: run the free signup first (email code), remembering the plan
+    // so checkout resumes right after. Signed-in: straight to Stripe.
+    if (!authed && !admin) {
+      setPendingPlan(plan);
+      setUp(null);
+      setAuthErr(""); setAuthStep("form"); setAuthModal("signup");
+      return;
+    }
+    window.open("https://checkout.stripe.com", "_blank", "noopener");
+    if (plan) setTier(plan);
+    setUp(null);
+  };
+
+  // Distance from the located user to a business, in miles.
+  const distMi = (d) => (geo ? hav(geo.lat, geo.lng, llOf(d)[0], llOf(d)[1]) : null);
+
+  const flashGeo = (m) => { setGeoMsg(m); setTimeout(() => setGeoMsg(null), 3200); };
+
+  // Locate: geolocate -> nearest city -> nearest-first sort. Nearest-first is
+  // free (pure client-side, zero marginal cost). Switching the cache to a
+  // non-SF city is the paid gate, unless admin mode is on.
+  // We never prompt the browser for coordinates. The request goes to our
+  // servers, which resolve an approximate city from the connection. The mock
+  // resolves to the person's nearest city after a short round trip.
+  const locate = () => {
+    if (locating) return;
+    setLocating(true);
+    setTimeout(() => {
+      setLocating(false);
+      const best = CITIES.find((c) => c.n === "Boston, MA") || CITIES[0];
+      setGeo({ lat: best.lat, lng: best.lng, city: best.n });
+      setSort({ key: "dist", dir: "asc" });
+      if (best.n === "San Francisco, CA" || admin || authed) setLocCity(best.n);
+      else { setPendingCity(best.n); setAuthModal("signup"); }
+    }, 700);
+  };
+
+  // Refresh (admin / paid): pull "just listed" businesses into the cache. A
+  // short spin sells the crawl, then 2-4 fresh no-website leads land on top
+  // and the sort flips to newest-first so they are visible immediately.
+  const refreshCache = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setTimeout(() => {
+      const batch = 2 + (freshCount.current % 3);
+      const add = [];
+      for (let i = 0; i < batch; i++) add.push(freshRow(freshCount.current + i));
+      freshCount.current += batch;
+      setFresh((f) => [...add, ...f].slice(0, 40));
+      setSort({ key: "listed", dir: "asc" });
+      setRefreshing(false);
+    }, 650);
+  };
+
+  // CSV export (admin / paid): the current view or the shift+click selection.
+  const exportCSV = (list) => {
+    const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const head = ["Name", "Category", "Reviews", "Stars", "Address", "Neighborhood", "Website status", "Phone"];
+    const lines = [head.join(",")].concat(list.map((d) =>
+      [d.name, d.cat, d.rev, ratingOf(d).toFixed(1), `${d.addr}, San Francisco, CA`, d.hood, statusBits(d).label, d.phone].map(esc).join(",")));
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "b2web-sf-leads.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  useEffect(() => {
+    try { localStorage.setItem("b2w-admin", admin ? "1" : "0"); } catch {}
+    if (!admin) { setAdminRows(null); setEditRows(false); setFresh([]); }
+    if (admin) setWall(false); // admin acts as the top paid tier: no wall
+    if (!admin) setUltra(false);
+  }, [admin]);
+
+  // Armed alerts (admin): simulate newly listed no-website businesses pushing
+  // in. A toast drops from the top center ~1.2s after arming, then every 18s,
+  // rotating through the cache (nearest first once located).
+  useEffect(() => {
+    if (!(admin && alertOn)) { setAlertToast(null); return; }
+    const cand = ALL_ROWS.filter((d) => d.status === "none");
+    if (geo) cand.sort((a, b) => hav(geo.lat, geo.lng, ...llOf(a)) - hav(geo.lat, geo.lng, ...llOf(b)));
+    const fire = () => {
+      const biz = cand[alertIdx.current % cand.length];
+      alertIdx.current += 1;
+      setAlertToast({ biz, ago: 1 + (hashStr(biz.name + "ago") % 9) });
+    };
+    const t0 = setTimeout(fire, 1200);
+    const iv = setInterval(fire, 18000);
+    return () => { clearTimeout(t0); clearInterval(iv); };
+  }, [admin, alertOn, geo]);
+
+  // Each toast auto-dismisses; it is a preview, not a modal.
+  useEffect(() => {
+    if (!alertToast) return;
+    const t = setTimeout(() => setAlertToast(null), 8000);
+    return () => clearTimeout(t);
+  }, [alertToast]);
+
+  const endTour = () => { setTour(null); try { localStorage.setItem("b2w-tour", "1"); } catch {} };
+  const nextTour = () => { if (tour < 3) setTour(tour + 1); };
+
+  // Prototype auth: flips the flag, applies a pending city unlock if the
+  // signup came from the locate flow. Log out reverts to the SF demo slice.
+  const signIn = (t) => {
+    setAuthed(true);
+    if (t) setTier(t);
+    setAuthModal(null);
+    setWall(false);
+    setAcctMenu(false);
+    setAuthPw(""); setAuthCode(""); setAuthErr("");
+    if (pendingCity) { setLocCity(pendingCity); setPendingCity(null); }
+    if (pendingLoc) { setPendingLoc(false); locate(); } // finish the detect flow
+    if (pendingPlan) { const pl = pendingPlan; setPendingPlan(null); setTier(pl); window.open("https://checkout.stripe.com", "_blank", "noopener"); }
+  };
+  const doLogOut = () => { setAuthed(false); setTier("free"); setAcctMenu(false); setLocCity("San Francisco, CA"); setLogoutAsk(false); };
+
+  // Registered-email store (prototype): signing up with a known email routes
+  // to log in. Non-Gmail/Outlook emails also require a phone number.
+  const bump = () => { setPwShake(true); setTimeout(() => setPwShake(false), 420); };
+  const resendCode = () => { if (resendLeft <= 0) setResendLeft(60); };
+  const REG_KEY = "b2w-users";
+  const regList = () => { try { return JSON.parse(localStorage.getItem(REG_KEY) || "[]"); } catch { return []; } };
+  const regAdd = (em) => { try { const l = regList(); if (!l.includes(em)) { l.push(em); localStorage.setItem(REG_KEY, JSON.stringify(l)); } } catch {} };
+  // NIST-style: length beats complexity. Accept >= 15 chars, or a passphrase
+  // of 4+ words. No forced numbers/symbols/case.
+  const strongPw = (pw) => pw.trim().length >= 15 || pw.trim().split(/\s+/).filter(Boolean).length >= 4;
+  const needsPhone = (em) => /@/.test(em) && !/@(gmail\.com|googlemail\.com|outlook\.com|hotmail\.com|live\.com)\s*$/i.test(em.trim());
+
+  // Step 1: identifier + password (+ phone when required). A matching pair
+  // "sends" a 6-digit code to the email (mocked). Step 2 confirms it.
+  const authContinue = (su, inGate) => {
+    const em = email.trim();
+    if (!em || !authPw.trim() || (needsPhone(em) && !authPhone.trim())) { setAuthErr("Must fill in required fields."); bump(); return; }
+    if (su && !strongPw(authPw)) { setAuthErr("Use at least 15 characters, or 4+ words as a passphrase."); bump(); return; }
+    if (su && regList().includes(em.toLowerCase())) {
+      if (inGate) setGateMode("login"); else setAuthModal("login");
+      setAuthErr("That email already has an account. Log in instead.");
+      return;
+    }
+    setAuthErr("");
+    setAuthStep("code");
+    setResendLeft(60);
+  };
+  const authConfirm = (su) => {
+    if (authCode.trim().length < 6) { setAuthErr("Enter the 6-digit code from your email."); return; }
+    if (su) regAdd(email.trim().toLowerCase());
+    signIn("free");
+  };
+
+  const openAd = () => { setAdOpen(true); setAdLeft(5); };
+  const claimRows = () => { setExtra(true); setAdOpen(false); };
+
+  // rewarded-ad countdown (5s demo timer standing in for the 60s unit)
+  useEffect(() => {
+    if (!adOpen || adLeft <= 0) return;
+    const t = setTimeout(() => setAdLeft((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [adOpen, adLeft]);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Live "current viewers" wobble. ULTRA makes it lurch faster and wider.
+  useEffect(() => {
+    const period = ultra ? 380 : 2600;
+    const t = setInterval(() => {
+      setViewers((v) => {
+        const swing = ultra ? 14 : 3;
+        let n = v + (Math.floor(Math.random() * (swing * 2 + 1)) - swing);
+        if (n < 120) n = 120 + Math.floor(Math.random() * 20);
+        if (n > 940) n = 940 - Math.floor(Math.random() * 20);
+        return n;
+      });
+    }, period);
+    return () => clearInterval(t);
+  }, [ultra]);
+
+  // Resend-code cooldown countdown
+  useEffect(() => {
+    if (resendLeft <= 0) return;
+    const t = setTimeout(() => setResendLeft((n) => n - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendLeft]);
+
+  // Screenshot deterrent. Best effort only: browsers cannot truly block OS
+  // captures. PrintScreen and window focus loss blur everything; focus
+  // restores it. Screen recorders that keep focus are unaffected.
+  useEffect(() => {
+    let t;
+    const up = (e) => {
+      if (e.key === "PrintScreen") {
+        setGuard(true);
+        clearTimeout(t); t = setTimeout(() => setGuard(false), 1500);
+      }
+    };
+    const onBlur = () => setGuard(true);
+    const onFocus = () => setGuard(false);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+
+  // in-feed ad: count down to 0, then the Cancel control goes live
+  useEffect(() => {
+    if (inFeedCountdown <= 0) return;
+    const t = setTimeout(() => setInFeedCountdown((n) => n - 1), 1000);
+    return () => clearTimeout(t);
+  }, [inFeedCountdown]);
+
+
+  // Close the popover when clicking anywhere outside it
+  useEffect(() => {
+    if (!up) return;
+    const onDoc = (e) => {
+      if (upRef.current && !upRef.current.contains(e.target)) setUp(null);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [up]);
+
+  // Hard wall: after 2 minutes of anonymous browsing a full-page signup gate
+  // takes over and cannot be clicked away. Admin (= top paid tier) is exempt
+  // so QA never gets locked out; the timer waits for the first-visit tour.
+  useEffect(() => {
+    if (authed || admin || walled.current || tour != null) return;
+    const t = setTimeout(() => {
+      walled.current = true;
+      setWall(true);
+      setAuthStep("form"); setAuthErr(""); setGateEmail(false); setGateMode("signup");
+    }, 120000);
+    return () => clearTimeout(t);
+  }, [authed, admin, tour]);
+
+  // Close the share popover / account menu on outside clicks
+  useEffect(() => {
+    if (!share) return;
+    const onDoc = (e) => { if (shareRef.current && !shareRef.current.contains(e.target)) setShare(null); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [share]);
+  useEffect(() => {
+    if (!notifOpen) return;
+    const onDoc = (e) => { if (notifRef.current && !notifRef.current.contains(e.target)) setNotifOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [notifOpen]);
+  useEffect(() => {
+    if (!acctMenu) return;
+    const onDoc = (e) => { if (acctRef.current && !acctRef.current.contains(e.target)) setAcctMenu(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [acctMenu]);
+
+  // Reset the auth flow whenever the modal opens or switches mode
+  useEffect(() => {
+    if (!authModal) return;
+    setAuthStep("form"); setAuthCode("");
+  }, [authModal]);
+
+  // Close the search dropdown on any outside click
+  useEffect(() => {
+    if (!qOpen) return;
+    const onDoc = (e) => {
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target)) setQOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [qOpen]);
+
+  // Close the "detect my location" popover on any outside click
+  useEffect(() => {
+    if (!locPrompt) return;
+    const onDoc = (e) => {
+      if (locPromptRef.current && !locPromptRef.current.contains(e.target) &&
+          locRef.current && !locRef.current.contains(e.target)) setLocPrompt(null);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [locPrompt]);
+
+  // ── Keyboard suite ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e) => {
+      const inField = e.target.closest && e.target.closest("input, textarea, select");
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        locRef.current && locRef.current.focus();
+        setKPulse(true);
+        setTimeout(() => setKPulse(false), 1100);
+        return;
+      }
+
+      if (e.key === "Escape") {
+        if (adminAsk) { setAdminAsk(false); return; } // reachable even behind the wall
+        if (tour != null || wall) return; // tour and the wall cannot be dismissed
+        if (share) { setShare(null); return; }
+        if (bizPage) { setBizPage(null); return; }
+        if (infoPage) { setInfoPage(null); return; }
+        if (alertToast) { setAlertToast(null); return; }
+        if (acctMenu) { setAcctMenu(false); return; }
+        if (acctOpen) { setAcctOpen(false); return; }
+        if (up) { setUp(null); return; }
+        if (locPrompt) { setLocPrompt(null); return; }
+        if (authModal) { setAuthModal(null); setPendingCity(null); setPendingLoc(false); return; }
+        if (adOpen) { setAdOpen(false); return; }
+        if (inField) { e.target.blur(); return; }
+        if (pane.mode) { setPane({ mode: null }); return; }
+        if (multi.size) { setMulti(new Set()); return; }
+        if (selected) { setSelected(null); return; }
+        return;
+      }
+
+      if (tour != null) {
+        if (e.key === "Enter" && tour < 3) { e.preventDefault(); nextTour(); }
+        return;
+      }
+
+      if (bizPage && e.key === "ArrowLeft") { e.preventDefault(); setBizPage(null); return; }
+
+      if (inField || adOpen || authModal || locPrompt || bizPage || wall || infoPage) return;
+
+      if (e.key === "/") { e.preventDefault(); if (searchInputRef.current) searchInputRef.current.focus(); return; }
+
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (!rows.length) return;
+        e.preventDefault();
+        const idx = rows.findIndex((d) => d.name === selected);
+        const step = e.key === "ArrowDown" ? 1 : -1;
+        const next = idx === -1
+          ? (step === 1 ? 0 : rows.length - 1)
+          : Math.min(rows.length - 1, Math.max(0, idx + step));
+        const d = rows[next];
+        selectRow(d);
+        requestAnimationFrame(() => {
+          const el = rowRefs.current.get(d.name);
+          el && el.scrollIntoView({ block: "nearest" });
+        });
+        return;
+      }
+
+      if (e.key === "Enter" && pane.mode === "business") {
+        e.preventDefault();
+        notesRef.current && notesRef.current.focus();
+        return;
+      }
+
+      const k = e.key.toLowerCase();
+      if (k === "c" && selBiz) { copyPhone(selBiz); return; }
+      if (k === "r" && selBiz) { copyReviews(selBiz); return; }
+      if ((k === "w" || k === "m") && selBiz) {
+        // Browsers focus the new tab; true background tabs can't be forced from
+        // JS. Selection persists, so the panel state is intact on return.
+        // W = web presence (site/social), M = map.
+        window.open(k === "w" ? webHref(selBiz) : mapHref(selBiz), "_blank", "noopener");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [rows, selected, selBiz, pane.mode, multi, adOpen, up, tour, authModal, locPrompt, alertToast, bizPage, infoPage, wall, share, acctMenu, acctOpen, adminAsk]);
+
+  // ── Pane content (business detail only) ─────────────────────────────────────
+  const paneTitle = pane.mode === "business" && selBiz ? selBiz.name : "";
+
+  return (
+    <div ref={rootRef} style={{ ...S.root, paddingBottom: 24 }} className={!admin && guard ? "snapguard" : ""}>
+      <style>{CSS}</style>
+      {!admin && guard && (
+        <div className="guardNote" style={S.guardNote}>
+          <span style={S.guardBadge}>Screenshots are disabled. Cached lead data is licensed to your plan.</span>
+        </div>
+      )}
+
+      {/* Top bar — the whole header. No hero, no tagline. */}
+      <header style={S.topbar}>
+        <div style={S.brandWrap}>
+          <button style={S.brandBtn} onClick={resetAll} title="Reset filters">
+            <span style={{ color: TEXT, fontWeight: 700 }}>B2Web</span>
+            <span style={{ color: RED, fontFamily: mono }}>.site</span>
+          </button>
+        </div>
+
+        <div style={S.centerUnit}>
+        <div ref={searchWrapRef} style={S.searchWrapInner}>
+          <span style={S.searchIcon} aria-hidden="true"><Icon k="search" size={12} /></span>
+          <input ref={searchInputRef} style={S.searchInput} placeholder="Search businesses ( / )"
+            aria-label="Search businesses" value={q}
+            onChange={(e) => { setQ(e.target.value); setQOpen(true); setQIdx(0); }}
+            onFocus={() => q.trim() && setQOpen(true)}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") { e.preventDefault(); setQIdx((i) => Math.min(i + 1, qMatches.length - 1)); }
+              else if (e.key === "ArrowUp") { e.preventDefault(); setQIdx((i) => Math.max(i - 1, 0)); }
+              else if (e.key === "Enter" && qMatches[qIdx]) { openBizPage(qMatches[qIdx]); setQ(""); setQOpen(false); e.currentTarget.blur(); }
+              else if (e.key === "Escape") { e.stopPropagation(); setQOpen(false); e.currentTarget.blur(); }
+            }} />
+          {qOpen && q.trim() && (
+            <div style={S.searchDrop} role="listbox" aria-label="Search results">
+              {qMatches.length ? qMatches.map((d, i) => {
+                const sb = statusBits(d);
+                return (
+                  <button key={d.name} className="qItem" role="option" aria-selected={i === qIdx}
+                    style={{ ...S.qItem, ...(i === qIdx ? { background: SEL } : null) }}
+                    onMouseEnter={() => setQIdx(i)}
+                    onClick={() => { openBizPage(d); setQ(""); setQOpen(false); }}>
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 11.5, fontWeight: 700, color: TEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</span>
+                      <span style={{ display: "block", fontSize: 10, color: MUTED }}>{d.cat}, {d.hood}</span>
+                    </span>
+                    <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, color: d.status === "site" ? MUTED : sb.color, flexShrink: 0 }}>{sb.label}</span>
+                  </button>
+                );
+              }) : (
+                <div style={{ padding: "10px 11px", fontSize: 11, color: MUTED, lineHeight: 1.5 }}>
+                  No matches in your slice. The paid cache holds the full city.
+                  <button className="paneLink" style={{ ...S.paneLink, marginTop: 6, display: "block" }}
+                    onClick={(e) => { setQOpen(false); openUnlimited(e.currentTarget); }}>
+                    See plans
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+          <button ref={cityRef} className="cityBtn" style={S.cityBtn}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              const vw = window.innerWidth || 1200;
+              setLocPrompt({ x: Math.max(8, Math.min(r.left, vw - 288)), y: r.bottom + 6 });
+            }}
+            title="Change location">
+            <Icon k="target" size={11} />
+            <span style={{ color: TEXT, fontWeight: 700 }}>{locating ? "Locating..." : locCity}</span>
+          </button>
+        </div>
+        <div style={S.topMeta}>
+          <span ref={notifRef} style={{ position: "relative", display: "inline-flex" }}>
+            <button className="themeBtn" style={S.themeBtn} aria-label="Notifications" title="New no-website listings you missed"
+              onClick={() => { setNotifOpen((v) => !v); setNotifSeen(true); }}>
+              <Icon k="bell" size={15} />
+              {!notifSeen && <span style={S.notifDot} aria-hidden="true" />}
+            </button>
+            {notifOpen && (
+              <span style={S.notifPop} role="menu" aria-label="New listings">
+                <span style={S.notifHead}>
+                  <span>New since your last visit</span>
+                  <span style={{ color: FAINT }}>{missed.length}</span>
+                </span>
+                {missed.map((d) => {
+                  const sb = statusBits(d);
+                  return (
+                    <button key={d.name} className="qItem" style={{ ...S.qItem, padding: "8px 10px" }}
+                      onClick={() => { setNotifOpen(false); openBizPage(d); }}>
+                      <span style={{ minWidth: 0 }}>
+                        <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: TEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</span>
+                        <span style={{ display: "block", fontSize: 9.5, color: MUTED }}>{d.cat}, {d.hood}, listed {listedLabel(d)}</span>
+                      </span>
+                      <span style={{ fontFamily: mono, fontSize: 9.5, fontWeight: 700, color: sb.c, flexShrink: 0 }}>{sb.label}</span>
+                    </button>
+                  );
+                })}
+              </span>
+            )}
+          </span>
+          <button className="hdrLink" style={S.hdrLink} onClick={() => setInfoPage("about")}>About</button>
+          <button className="hdrLink" style={S.hdrLink} onClick={() => setInfoPage("help")}>Help</button>
+          <button className="themeBtn" style={S.themeBtn}
+            onClick={() => setTheme((t) => (t === "light" ? "dark" : t === "dark" ? "pitch" : "light"))}
+            title={`Theme: ${theme === "light" ? "Light" : theme === "pitch" ? "Pitch black" : "Dark"}. Click to change`}
+            aria-label="Cycle theme: light, dark, pitch black">
+            <Icon k={theme === "light" ? "sun" : "moon"} size={14} fill={theme === "pitch" ? "currentColor" : "none"} />
+          </button>
+          {(authed || admin) && (
+            <span style={S.tierChip} title="Current plan">
+              {admin ? "UNLIMITED" : tier.toUpperCase()}
+            </span>
+          )}
+          {authed ? (
+            <span ref={acctRef} style={{ position: "relative", display: "inline-flex" }}>
+              <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px", maxWidth: 180, whiteSpace: "nowrap" }}
+                onClick={() => setAcctMenu((v) => !v)} aria-haspopup="menu" aria-expanded={acctMenu}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{email || "Account"}</span>
+              </button>
+              {acctMenu && (
+                <span style={S.acctMenu} role="menu" aria-label="Account">
+                  <button className="acctItem" style={S.acctItem} role="menuitem"
+                    onClick={() => { setAcctMenu(false); setAcctOpen(true); }}>Manage account</button>
+                  <button className="acctItem" style={S.acctItem} role="menuitem"
+                    onClick={() => { setAcctMenu(false); setAcctOpen2(true); }}>Preferences</button>
+                  <button className="acctItem" style={S.acctItem} role="menuitem"
+                    onClick={() => { setAcctMenu(false); setLogoutAsk(true); }}>Log out</button>
+                </span>
+              )}
+            </span>
+          ) : (
+            <>
+              <button className="btnO" style={{ ...S.outBtn, padding: "6px 14px" }}
+                onClick={() => { setAuthErr(""); setAuthModal("login"); }}>Log in</button>
+              <button className="btnP" style={{ ...S.priBtn, padding: "6px 16px" }}
+                onClick={() => { setAuthErr(""); setAuthModal("signup"); }}>Sign up</button>
+            </>
+          )}
+        </div>
+      </header>
+
+      {/* Control deck: free filters left, locked power filters right — visible, never hidden */}
+      <div style={S.filters}>
+        <div style={S.fGroup}>
+          <label style={S.fLabel} htmlFor="f-cat">Category</label>
+          <select id="f-cat" style={S.select} value={admin && multiCatOn ? "All categories" : cat}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (admin && multiCatOn) {
+                if (v !== "All categories") setCats((s0) => { const n = new Set(s0); n.add(v); return n; });
+                return;
+              }
+              setCat(v);
+            }}>
+            {CATS.map((c) => <option key={c}>{c}</option>)}
+          </select>
+          {admin && multiCatOn && [...cats].map((c) => (
+            <button key={c} className="hoodChip" style={S.hoodChip}
+              onClick={() => setCats((s0) => { const n = new Set(s0); n.delete(c); return n; })}
+              title="Remove category">
+              {c} <span style={{ marginLeft: 5, color: MUTED }}>✕</span>
+            </button>
+          ))}
+        </div>
+
+        <span style={S.vrule} />
+
+        <div style={S.fGroup}>
+          <label style={S.fLabel} htmlFor="f-rev">Min reviews</label>
+          {revCustom ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <input id="f-rev" type="number" min="0" style={{ ...S.select, minWidth: 70, width: 70 }}
+                value={minRev} onChange={(e) => setMinRev(Math.max(0, +e.target.value || 0))}
+                aria-label="Custom minimum reviews" />
+              <button className="tagBtn" style={{ ...S.tagBtn, marginLeft: 0 }} title="Back to presets"
+                onClick={() => { setRevCustom(false); setMinRev(0); }}>Cancel</button>
+            </span>
+          ) : (
+          <select id="f-rev" style={{ ...S.select, minWidth: 90 }} value={minRev}
+            onChange={(e) => {
+              if (e.target.value === "custom") {
+                if (admin) { setRevCustom(true); return; }
+                openUnlimited(e.target, { title: "Custom filters", body: FEATURES["Custom filters"] }); return;
+              }
+              setMinRev(+e.target.value);
+            }}>
+            {REVIEW_STOPS.map((n) => <option key={n} value={n}>{n === 0 ? "Any" : `${n}+`}</option>)}
+            <option value="custom">{admin ? "Custom" : "Custom 🔒"}</option>
+          </select>
+          )}
+        </div>
+
+        <span style={S.vrule} />
+
+        <div style={S.fGroup}>
+          <label style={S.fLabel} htmlFor="f-stars">Min stars</label>
+          {starsCustom ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <input id="f-stars" type="number" min="0" max="5" step="0.1" style={{ ...S.select, minWidth: 70, width: 70 }}
+                value={minStars} onChange={(e) => setMinStars(Math.max(0, Math.min(5, +e.target.value || 0)))}
+                aria-label="Custom minimum stars" />
+              <button className="tagBtn" style={{ ...S.tagBtn, marginLeft: 0 }} title="Back to presets"
+                onClick={() => { setStarsCustom(false); setMinStars(0); }}>Cancel</button>
+            </span>
+          ) : (
+          <select id="f-stars" style={{ ...S.select, minWidth: 90 }} value={minStars}
+            onChange={(e) => {
+              if (e.target.value === "custom") {
+                if (admin) { setStarsCustom(true); return; }
+                openUnlimited(e.target, { title: "Custom filters", body: FEATURES["Custom filters"] }); return;
+              }
+              setMinStars(+e.target.value);
+            }}>
+            {STAR_STOPS.map((n) => <option key={n} value={n}>{n === 0 ? "Any" : `${n.toFixed(1)}★`}</option>)}
+            <option value="custom">{admin ? "Custom" : "Custom 🔒"}</option>
+          </select>
+          )}
+        </div>
+
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={S.fLabel}>View</span>
+          <span style={S.billSeg} role="tablist" aria-label="Layout view">
+            {[["grid", "Grid"], ["split", "Split"], ["trending", "Trending"]].map(([v, lab]) => {
+              const paid = admin || tier !== "free";
+              const locked = v !== "grid" && !paid;
+              return (
+                <button key={v} role="tab" aria-selected={view === v}
+                  style={{ ...S.billBtn, ...(view === v ? S.billOn : null) }}
+                  onClick={(e) => {
+                    if (locked) { openUnlimited(e.currentTarget, { title: `${lab} view`, body: "Split view keeps the screener on the left and the business you are working on the right. Trending ranks the cache by how many people are viewing each lead right now. Both ship with the paid plans." }); return; }
+                    setView(v);
+                  }}>
+                  {lab}{locked && <Lock />}
+                </button>
+              );
+            })}
+          </span>
+          {canCompare && (
+            <button className="billBtn" style={{ ...S.billBtn, border: `1px solid ${LINE}`, borderRadius: 2, ...(compareOn ? S.billOn : null) }}
+              onClick={() => { if (compareOn) setCompare(new Set()); setCompareOn(!compareOn); }}
+              title="Select multiple businesses to compare side by side">
+              Compare{compare.size ? ` (${compare.size})` : ""}
+            </button>
+          )}
+          {(admin || tier !== "free") && (
+            <button className="themeBtn" style={S.themeBtn} title="Full screen the screener"
+              onClick={() => {
+                const el = rootRef.current;
+                if (!el) return;
+                if (document.fullscreenElement) document.exitFullscreen && document.exitFullscreen();
+                else el.requestFullscreen && el.requestFullscreen();
+              }}
+              aria-label="Toggle full screen">
+              <Icon k="expand" size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Power (paid) filters — their own row beneath the free filters */}
+      <div style={S.lockedRow}>
+        <span style={S.fLabel}>Power filters</span>
+        <div style={S.lockedChips} aria-label="Locked paid features">
+          {Object.keys(FEATURES).filter((l) => l !== "Custom filters").map((l) => {
+            // Admin: every chip is functional. [isOn, toggle] per label.
+            const toggles = {
+              "Exclude contacted": [excludeContacted, () => setExcludeContacted(!excludeContacted)],
+              "Multiple categories": [multiCatOn, () => { if (multiCatOn) setCats(new Set()); setMultiCatOn(!multiCatOn); }],
+              "Radius / Draw area": [radiusOn, () => {
+                if (!radiusOn && !geo) { flashGeo("Request your location first"); return; }
+                setRadiusOn(!radiusOn);
+              }],
+              "Real-time data": [rtOn, () => setRtOn(!rtOn)],
+              "Alerts": [alertOn, () => setAlertOn(!alertOn)],
+              "Compare businesses": [compareOn, () => { if (compareOn) setCompare(new Set()); setCompareOn(!compareOn); }],
+            };
+            const t = toggles[l];
+            const active = admin && t ? t[0] : false;
+            return (
+              <button key={l} className="lockedChip" style={{ ...S.lockedChip, ...(active ? S.chipOn : null) }}
+                onClick={(e) => {
+                  if (admin && t) { t[1](); return; }
+                  if (admin) { flashGeo(l + " is on (admin mock)"); return; }
+                  openUnlimited(e.currentTarget, { title: l, body: FEATURES[l] });
+                }}
+                aria-pressed={t ? active : undefined}
+                title={admin ? "Admin: functional" : "Paid plan filter. Click to preview"}>
+                {l}{admin && radiusOn && l === "Radius / Draw area" ? `: ${radiusMi} mi` : ""}
+              </button>
+            );
+          })}
+          {admin && radiusOn && (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              <input type="number" min="1" max="30" style={{ ...S.select, minWidth: 58, width: 58 }}
+                value={radiusMi} onChange={(e) => setRadiusMi(Math.max(1, Math.min(30, +e.target.value || 1)))}
+                aria-label="Radius in miles" />
+              <span style={{ fontSize: 10, color: MUTED }}>mi</span>
+            </span>
+          )}
+        </div>
+
+        <div style={S.sysRead} title="System status">
+          <span style={S.sysK}>Credits</span>
+          <span style={S.sysV}>{admin || tier === "unlimited" ? "Unlimited" : authed && tier === "starter" ? "40 / mo" : "0"}</span>
+          <span style={S.vruleSm} />
+          <span style={S.sysK}>API</span>
+          <button className="sysBtn" style={{ ...S.sysV, color: GREEN, background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: mono }}
+            onClick={() => setApiInfo(true)} title="Click for API details">OK</button>
+          <span style={S.vruleSm} />
+          <span style={S.sysK}>Queue</span><span style={S.sysV}>0</span>
+          <span style={S.vruleSm} />
+          <span style={S.sysK}>Cache</span>
+          <span style={{ ...S.sysV, ...(admin && (rtOn || fresh.length) ? { color: GREEN } : null) }}>
+            {admin && rtOn ? "Live" : admin && fresh.length ? "Now" : "6d"}
+          </span>
+        </div>
+      </div>
+
+      {/* Count strip: locate, the paid-gated no-website toggle, sort, stats */}
+      <div style={S.countStrip}>
+        <label style={{ ...S.fLabel, marginRight: -4 }} htmlFor="f-sort">Sort</label>
+        <select id="f-sort" style={{ ...S.select, minWidth: 150 }} value={`${sort.key}:${sort.dir}`}
+          onChange={(e) => {
+            const [k, dir] = e.target.value.split(":");
+            if (k === "dist" && !geo) { flashGeo("Request your location first"); return; }
+            setSort({ key: k, dir });
+          }}>
+          <option value="rev:desc">Featured</option>
+          <option value="rev:asc">Reviews low to high</option>
+          <option value="rating:desc">Stars high to low</option>
+          <option value="rating:asc">Stars low to high</option>
+          <option value="views:desc">Most popular</option>
+          <option value="views:asc">Least popular (best odds)</option>
+          <option value="listed:asc">Newest listed</option>
+          <option value="dist:asc">Nearest first</option>
+          <option value="name:asc">Name A to Z</option>
+          {!["rev:desc","rev:asc","rating:desc","rating:asc","views:desc","views:asc","listed:asc","dist:asc","name:asc"].includes(`${sort.key}:${sort.dir}`) && (
+            <option value={`${sort.key}:${sort.dir}`}>Column sort</option>
+          )}
+        </select>
+
+        <span style={S.vruleSm} />
+
+        <button ref={locRef} className={`locBtn${kPulse ? " kpulse" : ""}`} style={S.locBtn}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            const vw = window.innerWidth || 1200;
+            setLocPrompt({ x: Math.max(8, Math.min(r.left, vw - 288)), y: r.bottom + 6 });
+          }}
+          title="Find my city and sort businesses nearest first">
+          <Icon k="target" size={12} />
+          Request your location
+        </button>
+        {geoMsg && <span style={{ fontSize: 10, color: AMBER, whiteSpace: "nowrap" }}>{geoMsg}</span>}
+
+        <span style={S.vruleSm} />
+
+        <label style={S.check}>
+          <span style={S.cbWrap}>
+            <input type="checkbox" className="cbInput" checked={onlyLeads}
+              onChange={(e) => {
+                if (!admin) {
+                  openUnlimited(e.target, { title: "No website only", body: "Strip everything that already has a site and work pure leads. This filter ships with the paid plans, alongside real-time data and no caps." });
+                  return;
+                }
+                setOnlyLeads(e.target.checked);
+              }}
+              style={S.cbInput} aria-label="No website only" />
+            <span style={{ ...S.cbBox, ...(onlyLeads ? S.cbBoxOn : null) }} aria-hidden="true">
+              {onlyLeads && (
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff"
+                  strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>
+              )}
+            </span>
+          </span>
+          No website only {!admin && <Lock />}
+        </label>
+
+        <span style={S.vrule} />
+
+        <div style={S.stat}>
+          <span style={S.statK}>Showing</span>
+          {admin && editRows ? (
+            <input autoFocus type="number" min="1" style={S.rowInput}
+              value={rowDraft}
+              onChange={(e) => setRowDraft(e.target.value.replace(/[^0-9]/g, ""))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { const v = parseInt(rowDraft, 10); setAdminRows(Number.isFinite(v) && v > 0 ? v : null); setEditRows(false); }
+                if (e.key === "Escape") { setEditRows(false); }
+              }}
+              onBlur={() => { const v = parseInt(rowDraft, 10); setAdminRows(Number.isFinite(v) && v > 0 ? v : null); setEditRows(false); }}
+              aria-label="Number of rows to generate" />
+          ) : admin ? (
+            <button className="statEdit" style={S.statEdit}
+              onClick={() => { setRowDraft(String(rows.length)); setEditRows(true); }}
+              title="Click to set how many rows to generate">
+              {rows.length}<span style={{ color: FAINT, marginLeft: 4, fontFamily: mono, fontSize: 9 }}>edit</span>
+            </button>
+          ) : (
+            <span style={S.statV}>{rows.length}</span>
+          )}
+        </div>
+
+        {sort.key === "dist" && geo && (
+          <>
+            <span style={S.vruleSm} />
+            <button className="hoodChip" style={S.hoodChip} onClick={() => setSort({ key: "rev", dir: "desc" })}
+              title="Clear the nearest-first sort">
+              Nearest to you: {geo.city} <span style={{ marginLeft: 5, color: MUTED }}>✕</span>
+            </button>
+          </>
+        )}
+
+        {hood && (
+          <>
+            <span style={S.vruleSm} />
+            <button className="hoodChip" style={S.hoodChip} onClick={() => setHood(null)} title="Clear neighborhood filter">
+              {hood} <span style={{ marginLeft: 5, color: MUTED }}>✕</span>
+            </button>
+          </>
+        )}
+
+        <span className="cacheWrap" style={S.cacheWrap}>
+          <button className={`refreshBtn${refreshing ? " spin" : ""}`} style={S.refreshBtn}
+            onClick={(e) => {
+              if (admin) { refreshCache(); return; }
+              openUnlimited(e.currentTarget, { title: "Real-time data", body: FEATURES["Real-time data"] });
+            }}
+            title="Refresh: pull newly listed businesses" aria-label="Refresh the cache">
+            <Icon k="refresh" size={12} />
+          </button>
+          <button className={`cacheTag`} style={{ ...S.cacheTag, ...(admin && (rtOn || fresh.length) ? { color: GREEN } : null) }} aria-describedby={admin ? undefined : "rt-pop"}
+            onClick={(e) => {
+              if (admin) { setRtOn(!rtOn); return; }
+              openUnlimited(e.currentTarget, { title: "Real-time data", body: FEATURES["Real-time data"] });
+            }}>
+            {admin && rtOn ? "SF live, real-time" : admin && fresh.length ? "SF cache, updated just now" : <>SF cache, updated 6d ago {!admin && <Lock />}</>}
+          </button>
+          {!admin && (
+          <span id="rt-pop" className="cachePop" style={S.cachePop} role="tooltip">
+            <span style={{ display: "block", fontSize: 10.5, fontWeight: 700, color: TEXT, marginBottom: 4 }}>
+              Real-time data
+            </span>
+            {FEATURES["Real-time data"]}
+          </span>
+          )}
+        </span>
+      </div>
+
+      {/* Bulk-selection strip (shift+click) */}
+      {multi.size > 0 && (
+        <div style={S.bulkStrip}>
+          <span style={{ color: TEXT }}><strong>{multi.size}</strong> selected</span>
+          <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
+            onClick={(e) => {
+              if (admin) { exportCSV(ALL_ROWS.filter((d) => multi.has(d.name))); return; }
+              openUnlimited(e.currentTarget, { title: "Export CSV", body: FEATURES["Export CSV"] });
+            }}>
+            Export selection {!admin && <Lock />}
+          </button>
+          <button className="lockedChip" style={{ ...S.lockedChip, border: "none" }} onClick={() => setMulti(new Set())}>
+            Clear
+          </button>
+        </div>
+      )}
+
+      {/* ── Season contest banner: closed-deal leaderboard ── */}
+      {!admin && (
+        <div style={S.contest}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={S.contestTag}>B2WEB S1</span>
+            <span style={{ fontSize: 15, fontWeight: 700, color: TEXT }}>$5,000 Deal Race</span>
+            <span style={{ fontSize: 11, color: MUTED }}>Most websites sold from this cache wins. Report a close, climb the board.</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginLeft: "auto", flexWrap: "wrap" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <span style={{ ...S.fLabel, letterSpacing: "0.6px" }}>Ends in</span>
+              {[["11", "d"], [String(23 - now.getUTCHours()).padStart(2, "0"), "h"], [String(59 - now.getUTCMinutes()).padStart(2, "0"), "m"], [String(59 - now.getUTCSeconds()).padStart(2, "0"), "s"]].map(([v, u]) => (
+                <span key={u} style={S.contestCell}>{v}<span style={{ color: FAINT, fontSize: 8 }}>{u}</span></span>
+              ))}
+            </span>
+            <button className="btnP" style={{ ...S.priBtn, padding: "6px 18px" }}
+              onClick={(e) => openUnlimited(e.currentTarget, { title: "Deal Race S1", body: "Paid plans get a verified seller profile, a spot on the public leaderboard, and the credits to work enough leads to win. Free accounts can watch the board." })}>
+              Join now
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── 70/30 split: table left, detail pane right ─────────────────────── */}
+      <div style={S.split}>
+        <main style={S.main}>
+          <div style={{ display: "flex", gap: 0, alignItems: "stretch" }}>
+          <div className="tableWrap" style={{ flex: view === "split" ? "1 1 0" : "1 1 auto", minWidth: 0, display: view === "trending" ? "none" : "block" }}>
+            <table style={S.table} className="tbl">
+              <thead>
+                <tr>
+                  <Th k="name" label="Business" sort={sort} onSort={toggleSort} style={{ width: "26%" }} />
+                  <Th k="rev" label="Reviews" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 64 }} />
+                  <Th k="rating" label="Stars" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 60 }} />
+                  <Th k="listed" label="Listed" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 72 }} />
+                  <Th k="addr" label="Address" sort={sort} onSort={toggleSort} style={{ width: "30%" }} />
+                  <Th k="status" label="Website status" sort={sort} onSort={toggleSort} style={{ width: 124 }} />
+                  <Th k="views" label="Viewing" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 74 }} />
+                  <th scope="col" style={{ ...S.th, width: 104 }}>Phone</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 && (
+                  <tr>
+                    <td colSpan={8} style={{ ...S.td, padding: "26px 14px", color: MUTED, whiteSpace: "normal" }}>
+                      No matches in your free slice of {freeCap}. Clear a filter, or pull more rows from the cache below.
+                    </td>
+                  </tr>
+                )}
+                {rows.map((d, i) => {
+                  const isSel = selected === d.name;
+                  const isMulti = multi.has(d.name);
+                  return (
+                    <React.Fragment key={d.name + "|" + i}>
+                      <tr
+                        ref={(el) => { el ? rowRefs.current.set(d.name, el) : rowRefs.current.delete(d.name); }}
+                        className={`biz${isSel ? " sel" : ""}${isMulti ? " msel" : ""}`}
+                        style={{ animationDelay: `${Math.min(i * 8, 240)}ms` }}
+                        onClick={(e) => rowClick(e, d)}
+                        onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+                      >
+                        <td style={S.td}>
+                          {cmpActive && (
+                            <input type="checkbox" checked={compare.has(d.name)}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={() => toggleCmp(d.name)}
+                              style={{ marginRight: 8, verticalAlign: "middle", accentColor: BLUE_DEEP, cursor: "pointer" }}
+                              aria-label={`Compare ${d.name}`} />
+                          )}
+                          <a className="bizLink" href={mapHref(d)} target="_blank" rel="noreferrer"
+                            title="Open in Maps">{d.name}</a>
+                          <button className="tagBtn" style={S.tagBtn}
+                            onClick={(e) => { e.stopPropagation(); setCat(d.cat); }}
+                            title={`Filter category: ${d.cat}`}>
+                            {d.cat}
+                          </button>
+                        </td>
+                        <td style={{ ...S.td, textAlign: "right", color: d.rev === 0 ? FAINT : TEXT, fontFamily: mono }}>{d.rev}</td>
+                        <td style={{ ...S.td, textAlign: "right", fontFamily: mono }}>
+                          <span style={{ fontVariantNumeric: "tabular-nums", color: TEXT }}>{ratingOf(d).toFixed(1)}</span><span style={{ color: AMBER, marginLeft: 2 }}>★</span>
+                        </td>
+                        <td style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: d.listedAgoMin != null ? GREEN : MUTED }}>
+                          {listedLabel(d)}
+                        </td>
+                        <td style={S.td}>
+                          <span style={{ color: TEXT }}>{d.addr}</span>
+                          <span style={{ marginLeft: 8, fontSize: 10, color: MUTED }}>{d.hood}</span>
+                          {geo && (
+                            <span style={{ marginLeft: 8, fontSize: 10, color: FAINT, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>
+                              {distMi(d).toFixed(1)} mi
+                            </span>
+                          )}
+                        </td>
+                        <td style={S.td}><Status d={d} /></td>
+                        <td style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: viewersOf(d) <= 8 ? GREEN : viewersOf(d) >= 32 ? RED : MUTED }}
+                          title={viewersOf(d) <= 8 ? "Few eyes on this lead right now" : viewersOf(d) >= 32 ? "Crowded: many agencies looking" : "Moderate attention"}>
+                          {viewersOf(d)}
+                        </td>
+                        <td style={S.td}>
+                          <span className={copiedName === d.name ? "phoneHit" : ""} style={S.phoneSpan}
+                            onClick={(e) => { e.stopPropagation(); copyPhone(d); }}
+                            title="Click to copy">
+                            {d.phone}
+                          </span>
+                        </td>
+                      </tr>
+                      {/* In-feed slot: the free tier cannot remove it. Cancel
+                          (live after 5s) swaps the ad for an inline Go-unlimited
+                          pitch; the pitch's Cancel swaps the ad back in. */}
+                      {!admin && i === 11 && rows.length > 14 && (
+                        <tr>
+                          <td colSpan={8} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
+                            {inFeedMode === "ad" ? (
+                              <div style={{ ...S.inFeedAd, position: "relative" }}>
+                                advertisement
+                                <button
+                                  style={{ position: "absolute", top: 4, right: 6, background: "none", border: "none", fontFamily: ui, fontSize: 10, color: inFeedCountdown > 0 ? FAINT : MUTED, cursor: inFeedCountdown > 0 ? "default" : "pointer", padding: "2px 4px", lineHeight: 1 }}
+                                  onClick={() => { if (inFeedCountdown <= 0) setInFeedMode("pitch"); }}
+                                  title={inFeedCountdown > 0 ? `Close in ${inFeedCountdown}s` : "Close"}
+                                  aria-label={inFeedCountdown > 0 ? `Close ad in ${inFeedCountdown} seconds` : "Close ad"}>
+                                  {inFeedCountdown > 0 ? `${inFeedCountdown}` : "Cancel"}
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ ...S.inFeedAd, position: "relative", textTransform: "none", letterSpacing: 0, gap: 12, fontSize: 11, color: MUTED }}>
+                                <span style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Go unlimited</span>
+                                <span>No ads, real-time data, no caps. From $20/mo with a 1-day free trial.</span>
+                                <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }}
+                                  onClick={(e) => openUnlimited(e.currentTarget)}>
+                                  See plans
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                      {!admin && i === 27 && rows.length > 30 && (
+                        <tr>
+                          <td colSpan={8} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
+                            {inFeed2 === "ad" ? (
+                              <div style={{ ...S.inFeedAd, position: "relative" }}>
+                                advertisement
+                                <button style={S.adCancel} onClick={() => setInFeed2("pitch")} title="Close" aria-label="Close ad">Cancel</button>
+                              </div>
+                            ) : (
+                              <div style={{ ...S.inFeedAd, position: "relative", textTransform: "none", letterSpacing: 0, gap: 12, fontSize: 11, color: MUTED }}>
+                                <span style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Go unlimited</span>
+                                <span>Unlimited leads, no ads, live crawls. Starter is $20/mo.</span>
+                                <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }} onClick={(e) => openUnlimited(e.currentTarget)}>See plans</button>
+                                <button style={S.adCancel} onClick={() => setInFeed2("ad")} title="Back to the ad" aria-label="Close and show the ad again">Cancel</button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {/* Split: the last business you clicked, pinned beside the table */}
+          {view === "split" && (
+            <div style={{ flex: "1 1 0", minWidth: 0, borderLeft: `1px solid ${LINE}` }}>
+              <div style={S.mapPanel}>
+                <div style={S.mapBar}>
+                  <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: MUTED }}>Working lead</span>
+                  {selBiz && <span style={{ marginLeft: "auto", ...S.viewPill }}>
+                    <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT }}>{viewersOf(selBiz)}</span>
+                    <span style={{ color: MUTED }}>viewing</span><span style={S.livePip} />
+                  </span>}
+                </div>
+                <div style={{ padding: "14px 16px" }}>
+                  {!selBiz ? (
+                    <div style={{ fontSize: 11.5, color: FAINT, padding: "40px 0", textAlign: "center" }}>
+                      Click any row. It opens here, side by side with the screener.
+                    </div>
+                  ) : (() => {
+                    const sb = statusBits(selBiz);
+                    return (
+                      <>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: TEXT }}>{selBiz.name}</div>
+                        <div style={{ fontSize: 11, color: MUTED, margin: "3px 0 10px" }}>{selBiz.cat}, {selBiz.hood}</div>
+                        <div style={{ ...S.bizSec, borderColor: selBiz.status === "none" ? RED : AMBER, marginBottom: 10 }}>
+                          <div style={S.bizSecT}>Website status</div>
+                          <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: sb.c }}>{sb.label}</div>
+                          <div style={{ fontSize: 10, color: MUTED, marginTop: 4, lineHeight: 1.4 }}>{sb.tip}</div>
+                          <VulnFlags d={selBiz} />
+                        </div>
+                        <div style={S.kvGrid}>
+                          <span style={S.kvK}>Reviews</span><span style={{ ...S.kvV, fontFamily: mono }}>{selBiz.rev}</span>
+                          <span style={S.kvK}>Rating</span><span style={{ ...S.kvV, fontFamily: mono }}>{ratingOf(selBiz).toFixed(1)}★</span>
+                          <span style={S.kvK}>Address</span><span style={S.kvV}>{selBiz.addr}</span>
+                          <span style={S.kvK}>Phone</span>
+                          <span style={S.kvV}>
+                            <span className={copiedName === selBiz.name ? "phoneHit" : ""} style={S.phoneSpan}
+                              onClick={() => copyPhone(selBiz)} title="Click to copy">
+                              {copiedName === selBiz.name ? "[COPIED]" : selBiz.phone}
+                            </span>
+                          </span>
+                        </div>
+                        <div style={S.mapBox}><iframe title={`Map: ${selBiz.addr}`} src={mapEmbed(selBiz)} style={S.mapFrame} loading="lazy" /></div>
+                        <button className="btnO" style={{ ...S.outBtn, width: "100%", justifyContent: "center", marginTop: 8 }}
+                          onClick={() => openBizPage(selBiz)}>Open full business page</button>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Trending: the cache ranked by live viewers */}
+          {view === "trending" && (
+            <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+              <div style={S.mapPanel}>
+                <div style={S.mapBar}>
+                  <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: MUTED }}>Trending now</span>
+                  <span style={{ fontSize: 10, color: FAINT }}>Ranked by people viewing each lead. Fewer eyes means less competition.</span>
+                </div>
+                <div style={{ padding: "10px 14px 20px" }}>
+                  {[...rows].sort((a, b) => viewersOf(b) - viewersOf(a)).slice(0, 30).map((d, i) => {
+                    const sb = statusBits(d);
+                    const v = viewersOf(d);
+                    return (
+                      <button key={d.name} className="qItem" style={{ ...S.qItem, padding: "9px 8px" }} onClick={() => openBizPage(d)}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                          <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, color: i < 3 ? RED : FAINT, width: 22 }}>#{i + 1}</span>
+                          <span style={{ minWidth: 0 }}>
+                            <span style={{ display: "block", fontSize: 11.5, fontWeight: 700, color: TEXT }}>{d.name}</span>
+                            <span style={{ display: "block", fontSize: 10, color: MUTED }}>{d.cat}, {d.hood}</span>
+                          </span>
+                        </span>
+                        <span style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+                          <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, color: sb.c }}>{sb.label}</span>
+                          <span style={{ ...S.viewPill, minWidth: 96, justifyContent: "center" }}>
+                            <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT }}>{v}</span>
+                            <span style={{ color: MUTED }}>viewing</span>
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+          </div>
+
+          {/* End-cap under the table: the pitch, always on. The free slice is
+              spent by design; the copy states the shared-snapshot mechanics and
+              sells the real-time cache as the edge over competitors. */}
+          {!(admin || tier !== "free") && (
+          <div style={S.endCap}>
+            <div style={{ fontSize: 12.5, color: TEXT, fontWeight: 700, marginBottom: 4 }}>
+              No more businesses without a website?
+            </div>
+            <div style={{ fontSize: 11.5, color: MUTED, marginBottom: 12, maxWidth: 460, lineHeight: 1.55 }}>
+              Get the real-time cache to edge out competitors working the same Jun 5 snapshot.
+            </div>
+            <div style={{ ...S.edgeCompare, maxWidth: 460 }}>
+              <span style={{ color: MUTED, fontWeight: 700 }}>FREE</span>
+              <span style={{ color: MUTED }}>Same Jun 5 rows for every visitor, picked over daily</span>
+              <span style={{ color: GREEN, fontWeight: 700 }}>PAID</span>
+              <span style={{ color: TEXT }}>Private crawl on demand, leads before they reach the cache</span>
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              {!extra && !admin ? (
+                <button className="btnO" style={S.outBtn} onClick={openAd}>
+                  <Icon k="play" size={11} /> Watch a 1-min ad for 20 more
+                </button>
+              ) : (
+                <span style={{ fontSize: 11, color: FAINT }}>The demo cache slice ends at 40 rows.</span>
+              )}
+              <button className="btnP" style={S.priBtn} onClick={(e) => openUnlimited(e.currentTarget)}>
+                Get the real-time cache
+              </button>
+            </div>
+            <div style={{ fontSize: 10, color: FAINT, marginTop: 10 }}>
+              {admin && rtOn
+                ? "Real-time crawl mode is on (admin mock)."
+                : "Results are a delayed cache, snapshotted Jun 5. Real-time data is paid."}
+            </div>
+          </div>
+          )}
+
+          <footer style={S.footer}>
+            <span>b2web.site. Anonymous view shows the San Francisco cache only.</span>
+            <SiteFooter onHelp={() => setInfoPage("help")} />
+          </footer>
+        </main>
+
+        {/* ── Right pane (30%): replaces all center modals ───────────────────── */}
+        {pane.mode && (
+          <aside style={S.aside} aria-label="Detail pane">
+            <div style={S.asideInner}>
+              <div style={S.paneHead}>
+                <div style={S.paneTitle}>{paneTitle}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                  {pane.mode === "business" && selBiz && (
+                    <button className="btnO" style={{ ...S.outBtn, padding: "4px 9px", fontSize: 10 }}
+                      onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setShareCopied(false); setShare({ x: Math.max(8, r.left - 120), y: r.bottom + 6, biz: selBiz }); }}
+                      title="Share this business">
+                      <Icon k="share" size={10} /> Share
+                    </button>
+                  )}
+                  <button className="cancelBtn" style={{ ...S.cancelBtn, position: "static" }}
+                    onClick={() => setPane({ mode: null })} aria-label="Close pane (Esc)">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+
+              {pane.mode === "business" && selBiz && (() => {
+                const { c, label, tip } = statusBits(selBiz);
+                const watchers = viewersOf(selBiz);
+                return (
+                  <>
+                    <div style={{ marginBottom: 8 }}>
+                      <span style={{ ...S.status, fontSize: 11.5 }}>
+                        <span style={{ color: selBiz.status === "site" ? MUTED : c, fontWeight: 700 }}>{label}</span>
+                        <span style={{ ...S.viewPill, marginLeft: "auto" }}>
+                          <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{watchers}</span>
+                          <span style={{ color: MUTED }}>viewing</span>
+                          <span style={S.livePip} />
+                        </span>
+                      </span>
+                      <div style={{ fontSize: 10.5, color: MUTED, marginTop: 3, lineHeight: 1.35 }}>{tip}</div>
+                      <VulnFlags d={selBiz} />
+                    </div>
+
+                    <div style={S.kvGrid}>
+                      <span style={S.kvK}>Category</span>
+                      <span style={S.kvV}>
+                        <button className="kvLink" style={S.kvLink} onClick={() => setCat(selBiz.cat)}
+                          title="Filter the list by this category">{selBiz.cat}</button>
+                      </span>
+                      <span style={S.kvK}>Neighborhood</span>
+                      <span style={S.kvV}>
+                        <button className="kvLink" style={S.kvLink} onClick={() => setHood(selBiz.hood)}
+                          title="Filter the list by this neighborhood">{selBiz.hood}</button>
+                      </span>
+                      <span style={S.kvK}>Reviews</span>
+                      <span style={{ ...S.kvV, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>{selBiz.rev}</span>
+                      <span style={S.kvK}>Rating</span>
+                      <span style={{ ...S.kvV, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>{ratingOf(selBiz).toFixed(1)} <span style={{ color: AMBER }}>★</span></span>
+                      <span style={S.kvK}>Business age</span>
+                      <span style={S.kvV}>{ageOf(selBiz)} yrs <span style={{ color: MUTED }}>(listed since {2026 - ageOf(selBiz)})</span></span>
+                      <span style={S.kvK}>Cache entry</span>
+                      <span style={{ ...S.kvV, fontFamily: mono, color: selBiz.listedAgoMin != null ? GREEN : TEXT }}>Listed {listedLabel(selBiz)}</span>
+                      <span style={S.kvK}>Address</span>
+                      <span style={S.kvV}>{selBiz.addr}, San Francisco, CA</span>
+                      {geo && (
+                        <>
+                          <span style={S.kvK}>Distance</span>
+                          <span style={{ ...S.kvV, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>{distMi(selBiz).toFixed(1)} mi from you</span>
+                        </>
+                      )}
+                      <span style={S.kvK}>Phone</span>
+                      <span style={{ ...S.kvV }}>
+                        <span className={copiedName === selBiz.name ? "phoneHit" : ""}
+                          style={{ ...S.phoneSpan, ...(copiedName === selBiz.name ? { color: GREEN, fontWeight: 700, letterSpacing: "0.5px" } : null) }}
+                          onClick={() => copyPhone(selBiz)} title="Click to copy">
+                          {copiedName === selBiz.name ? "[COPIED]" : selBiz.phone}
+                        </span>
+                      </span>
+                      <span style={S.kvK}>Source</span>
+                      <span style={{ ...S.kvV, color: MUTED }}>Google listing, OSM, registry</span>
+                    </div>
+
+                    <div style={S.mapBox}>
+                      <iframe title={`Map: ${selBiz.addr}`} src={mapEmbed(selBiz)} style={S.mapFrame} loading="lazy" />
+                    </div>
+                    <a className="bizLink" style={{ fontSize: 10.5 }} href={mapHref(selBiz)} target="_blank" rel="noreferrer">
+                      Open full map
+                    </a>
+                    <button className="btnO" style={{ ...S.outBtn, width: "100%", marginTop: 10, justifyContent: "center" }}
+                      onClick={() => openBizPage(selBiz)}>
+                      Open full business page
+                    </button>
+
+                    <div style={{ marginTop: 14 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                        <span style={S.fLabel}>Google reviews</span>
+                        <span style={{ fontSize: 9.5, color: FAINT, fontFamily: mono }}>
+                          {reviewsOf(selBiz).total} total, {reviewsOf(selBiz).sampled} sampled
+                        </span>
+                      </div>
+                      <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 6, justifyContent: "center", ...(copiedRev ? { background: GREEN, borderColor: GREEN } : null) }}
+                        onClick={() => copyReviews(selBiz)}
+                        title="Copy every review to the clipboard">
+                        {copiedRev
+                          ? <>Copied {reviewsOf(selBiz).sampled} reviews to clipboard</>
+                          : <><Icon k="copy" size={12} /> Copy all reviews <span style={S.proTag}>PRO</span></>}
+                      </button>
+                      <div style={{ fontSize: 9.5, color: FAINT, marginTop: 4 }}>
+                        Pastes as plain text: author, rating, date, and body.
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 14 }}>
+                      <div style={S.fLabel}>Recommended AI prompt <span style={S.proTag}>PRO</span></div>
+                      <div style={{ position: "relative", marginTop: 6 }}>
+                        <div className={admin ? "" : "blurLock"} style={{ ...S.upFeature, marginBottom: 0, fontSize: 10, color: MUTED, lineHeight: 1.5, maxHeight: 96, overflow: "hidden" }}>
+                          {aiPromptOf(selBiz)}
+                        </div>
+                        {!admin && (
+                          <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.7px", textTransform: "uppercase", color: TEXT, background: PANEL, border: `1px solid ${LINE}`, borderRadius: 2, padding: "3px 7px" }}>
+                              Paid plans unlock this prompt
+                            </span>
+                          </span>
+                        )}
+                      </div>
+                      <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 8, justifyContent: "center", ...(copiedPrompt ? { background: GREEN, borderColor: GREEN } : null) }}
+                        onClick={(e) => {
+                          if (admin) { copyPrompt(selBiz); return; }
+                          openUnlimited(e.currentTarget, { title: "AI build prompts", body: "A ready-to-paste prompt per business, written from its live data: the presence gap, reviews, category, and contact details. Drop it into Lovable, v0, or Bolt and scaffold their site in minutes." });
+                        }}>
+                        {copiedPrompt ? "Copied to clipboard" : "Copy to Lovable"}
+                      </button>
+                    </div>
+
+                    <div style={{ marginTop: 14 }}>
+                      <div style={S.fLabel}>Lead notes</div>
+                      <textarea ref={notesRef} style={S.notes} rows={4}
+                        placeholder="Pitch angle, contact attempts, decision maker..."
+                        value={notes[selBiz.name] || ""}
+                        onChange={(e) => setNotes((n) => ({ ...n, [selBiz.name]: e.target.value }))} />
+                      <div style={{ fontSize: 9.5, color: FAINT, marginTop: 4 }}>
+                        Saved in this session only.
+                      </div>
+                    </div>
+
+                    {admin && (
+                      <button className="btnO"
+                        style={{ ...S.outBtn, width: "100%", marginTop: 12, justifyContent: "center", ...(contacted.has(selBiz.name) ? { color: GREEN, borderColor: GREEN } : null) }}
+                        onClick={() => setContacted((s0) => { const n = new Set(s0); if (n.has(selBiz.name)) n.delete(selBiz.name); else n.add(selBiz.name); return n; })}>
+                        {contacted.has(selBiz.name) ? "Un-mark contacted" : "Mark as contacted"}
+                      </button>
+                    )}
+
+                    <div style={S.paneHint}>
+                      <kbd>↑</kbd><kbd>↓</kbd> Rows | <kbd>Enter</kbd> Notes | <kbd>C</kbd> Copy phone | <kbd>R</kbd> Copy reviews | <kbd>W</kbd> Site | <kbd>M</kbd> Map
+                    </div>
+                  </>
+                );
+              })()}
+
+            </div>
+          </aside>
+        )}
+      </div>
+
+      {/* ── Rewarded ad overlay (the one allowed overlay: ads require attention) ── */}
+      {adOpen && (
+        <div style={S.overlay} onClick={() => setAdOpen(false)} role="dialog" aria-modal="true">
+          <div style={S.adModal} onClick={(e) => e.stopPropagation()}>
+            <button className="cancelBtn" style={S.cancelBtn} onClick={() => setAdOpen(false)} aria-label="Cancel">
+              Cancel
+            </button>
+            <div style={S.fakeAd}>
+              <div style={{ fontSize: 10.5, color: MUTED, letterSpacing: 1, marginBottom: 10 }}>
+                SPONSORED 0:0{adLeft} <span style={{ color: FAINT }}>(demo timer, 60s in production)</span>
+              </div>
+              <div style={{ fontSize: 14, color: TEXT, fontWeight: 700 }}>Ad plays here</div>
+              <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6 }}>
+                Finish it and rows 21 to 40 load from the cache below your current list.
+              </div>
+            </div>
+            {adLeft <= 0 ? (
+              <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 14, justifyContent: "center" }}
+                onClick={claimRows}>
+                Claim 20 more rows
+              </button>
+            ) : (
+              <button className="btnO" style={{ ...S.outBtn, width: "100%", marginTop: 14, justifyContent: "center", color: MUTED }}
+                disabled>
+                Unlocks in 0:0{adLeft}
+              </button>
+            )}
+            <button className="paneLink" style={{ ...S.paneLink, textAlign: "center", width: "100%" }}
+              onClick={(e) => { const el = e.currentTarget; setAdOpen(false); openUnlimited(el); }}>
+              Go unlimited instead
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── "Go unlimited" popover: anchored under whatever upsell was clicked ── */}
+      {up && (
+        <div ref={upRef} style={{ ...S.upPop, left: up.x, top: up.y }} role="dialog" aria-label="Go unlimited">
+          <div style={S.upHead}>
+            <span style={{ fontWeight: 700, color: TEXT }}>Go unlimited</span>
+            <span style={S.billSeg} role="tablist" aria-label="Billing period">
+              <button role="tab" aria-selected={upBilling === "mo"}
+                style={{ ...S.billBtn, ...(upBilling === "mo" ? S.billOn : null) }}
+                onClick={() => setUpBilling("mo")}>Monthly</button>
+              <button role="tab" aria-selected={upBilling === "yr"}
+                style={{ ...S.billBtn, ...(upBilling === "yr" ? S.billOn : null) }}
+                onClick={() => setUpBilling("yr")}>Yearly -20%</button>
+            </span>
+          </div>
+          {up.feature && (
+            <div style={S.upFeature}>
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: TEXT, marginBottom: 3 }}>{up.feature.title}</div>
+              <div style={{ fontSize: 10.5, color: MUTED, lineHeight: 1.5 }}>{up.feature.body}</div>
+            </div>
+          )}
+          <div style={S.tierGrid}>
+            {PLANS.map((pl) => {
+              const price = planPrice(pl, upBilling);
+              const picked = upTier === pl.id;
+              return (
+                <div key={pl.id} style={{ ...S.tierCard, ...(picked ? S.tierOn : null) }}>
+                  <div style={S.tierName}>{pl.name}</div>
+                  <div style={S.tierPrice}>
+                    ${price}<span style={{ fontSize: 10, color: MUTED, fontWeight: 400 }}>/mo</span>
+                  </div>
+                  <div style={{ fontSize: 9.5, color: FAINT, fontFamily: mono }}>
+                    {upBilling === "yr" ? `billed $${price * 12} yearly` : "billed monthly"}
+                  </div>
+                  <div style={S.tierCalls}>{pl.calls}</div>
+                  {pl.feats.map((f) => (
+                    <div key={f} style={{ ...S.planRow, fontSize: 10.5 }}>{f}</div>
+                  ))}
+                  <button className={pl.id === "unlimited" ? "btnP" : "btnO"}
+                    style={{ ...(pl.id === "unlimited" ? S.priBtn : S.outBtn), width: "100%", marginTop: 9, justifyContent: "center", fontSize: 10.5, padding: "6px 8px" }}
+                    onClick={() => { setUpTier(pl.id); setUpErr(false); }}>
+                    Start 1-day free trial
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {upTier && (() => {
+            const pl = PLANS.find((x) => x.id === upTier);
+            const price = planPrice(pl, upBilling);
+            return (
+              <div style={{ marginTop: 10 }}>
+                <input placeholder="email or phone number" style={{ ...S.input, ...(upErr && !email.trim() ? { borderColor: RED } : null) }}
+                  aria-label="Email address" value={email} onChange={(e) => setEmail(e.target.value)} />
+                {upErr && !email.trim() && (
+                  <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>Must fill in required fields.</div>
+                )}
+                <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 8, justifyContent: "center" }}
+                  onClick={() => startTrial(pl.id)}>
+                  {authed || admin ? "Continue to Stripe checkout" : "Continue to sign up"}
+                </button>
+                <div style={{ fontSize: 10, color: MUTED, marginTop: 8, lineHeight: 1.5 }}>
+                  {authed || admin
+                    ? <>Free for 1 day. Payment details are collected securely on Stripe; cancel before the trial ends and you pay nothing, otherwise it converts to {pl.name} at ${price}/mo{upBilling === "yr" ? `, billed $${price * 12} yearly` : ""}.</>
+                    : <>First create your free account, then you'll continue to Stripe to start the {pl.name} trial. Free for 1 day; cancel anytime before it converts.</>}
+                </div>
+              </div>
+            );
+          })()}
+          {!upTier && (
+            <div style={{ fontSize: 10, color: MUTED, marginTop: 9, lineHeight: 1.5 }}>
+              Every plan starts with a 1-day free trial. Card required; cancel anytime before it converts.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── API status detail ── */}
+      {apiInfo && (
+        <div style={S.overlay} onClick={() => setApiInfo(false)} role="dialog" aria-modal="true">
+          <div style={{ ...S.adModal, width: 400 }} onClick={(e) => e.stopPropagation()}>
+            <button className="cancelBtn" style={S.cancelBtn} onClick={() => setApiInfo(false)} aria-label="Cancel">Cancel</button>
+            <div style={{ fontSize: 16, fontWeight: 700, color: TEXT, marginBottom: 4 }}>API status</div>
+            <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 14 }}>All crawl and enrichment endpoints reporting healthy.</div>
+            <div style={{ ...S.kvGrid, gridTemplateColumns: "132px 1fr", marginBottom: 12 }}>
+              <span style={S.kvK}>Listing crawl</span><span style={{ ...S.kvV, fontFamily: mono, color: GREEN }}>OK, 210ms</span>
+              <span style={S.kvK}>URL verifier</span><span style={{ ...S.kvV, fontFamily: mono, color: GREEN }}>OK, 340ms</span>
+              <span style={S.kvK}>Registry lookup</span><span style={{ ...S.kvV, fontFamily: mono, color: GREEN }}>OK, 95ms</span>
+              <span style={S.kvK}>Review scrape</span><span style={{ ...S.kvV, fontFamily: mono, color: GREEN }}>OK, 620ms</span>
+              <span style={S.kvK}>Queue depth</span><span style={{ ...S.kvV, fontFamily: mono }}>0 jobs</span>
+              <span style={S.kvK}>Cache age</span><span style={{ ...S.kvV, fontFamily: mono }}>{admin && rtOn ? "live" : "6 days"}</span>
+            </div>
+            <div style={{ fontSize: 10.5, color: MUTED, lineHeight: 1.55 }}>
+              Free plans read the shared cache, so API health does not affect your results.
+              Paid plans dispatch live crawls against these endpoints; a credit is spent only
+              when a crawl returns rows.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Log out confirmation ── */}
+      {logoutAsk && (
+        <div style={S.overlay} onClick={() => setLogoutAsk(false)} role="dialog" aria-modal="true">
+          <div style={{ ...S.adModal, width: 320, textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 6 }}>Log out?</div>
+            <div style={{ fontSize: 11.5, color: MUTED, marginBottom: 16 }}>You'll drop back to the anonymous San Francisco cache.</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btnO" style={{ ...S.outBtn, flex: 1, justifyContent: "center" }} onClick={() => setLogoutAsk(false)}>Stay</button>
+              <button className="btnP" style={{ ...S.priBtn, flex: 1, justifyContent: "center" }} onClick={doLogOut}>Log out</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Preferences modal: theme + keybinds ── */}
+      {acctOpen2 && (
+        <div style={S.overlay} onClick={() => setAcctOpen2(false)} role="dialog" aria-modal="true">
+          <div style={{ ...S.adModal, width: 400 }} onClick={(e) => e.stopPropagation()}>
+            <button className="cancelBtn" style={S.cancelBtn} onClick={() => setAcctOpen2(false)} aria-label="Cancel">Cancel</button>
+            <div style={{ fontSize: 16, fontWeight: 700, color: TEXT, marginBottom: 12 }}>Preferences</div>
+            <div style={{ ...S.fLabel, marginBottom: 6 }}>Appearance</div>
+            <div style={S.billSeg} role="tablist" aria-label="Theme">
+              {[["light", "Light"], ["dark", "Dark"], ["pitch", "Pitch black"]].map(([k, lab]) => (
+                <button key={k} role="tab" aria-selected={theme === k}
+                  style={{ ...S.billBtn, ...(theme === k ? S.billOn : null) }}
+                  onClick={() => setTheme(k)}>{lab}</button>
+              ))}
+            </div>
+            <div style={{ ...S.fLabel, margin: "14px 0 6px" }}>Keybinds</div>
+            <div style={{ ...S.kvGrid, gridTemplateColumns: "116px 1fr", marginBottom: 0 }}>
+              {[["↑ / ↓", "Move rows"], ["Enter", "Lead notes"], ["C", "Copy phone"], ["R", "Copy reviews"],
+                ["W", "Web presence"], ["M", "Map"], ["/", "Search"], ["Esc", "Close"]].map(([k, v]) => (
+                <React.Fragment key={k}><span><kbd>{k}</kbd></span><span style={{ color: MUTED, fontSize: 11 }}>{v}</span></React.Fragment>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Manage account modal ── */}
+      {acctOpen && (
+        <div style={S.overlay} onClick={() => setAcctOpen(false)} role="dialog" aria-modal="true">
+          <div style={{ ...S.adModal, width: 380 }} onClick={(e) => e.stopPropagation()}>
+            <button className="cancelBtn" style={S.cancelBtn} onClick={() => setAcctOpen(false)} aria-label="Cancel">Cancel</button>
+            <div style={{ fontSize: 16, fontWeight: 700, color: TEXT, marginBottom: 4 }}>Manage account</div>
+            <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 14 }}>
+              Current plan: <strong style={{ color: TEXT }}>{admin ? "Unlimited (admin)" : tier === "free" ? "Free" : tier === "starter" ? "Starter" : "Unlimited"}</strong>
+            </div>
+            <div style={{ ...S.fLabel, marginBottom: 6 }}>Email</div>
+            <input style={S.input} aria-label="Account email" placeholder="email or phone number"
+              value={email} onChange={(e) => setEmail(e.target.value)} />
+            <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>New password</div>
+            <input type="password" style={S.input} aria-label="New password" placeholder="••••••••"
+              value={authPw} onChange={(e) => setAuthPw(e.target.value)} />
+            <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center" }}
+              onClick={() => setAcctOpen(false)}>
+              Save changes
+            </button>
+            <a className="bizLink" style={{ display: "block", textAlign: "center", marginTop: 12, fontSize: 11 }}
+              href="https://billing.stripe.com" target="_blank" rel="noreferrer">
+              Manage subscription on Stripe
+            </a>
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${LINE}` }}>
+              <div style={S.fLabel}>Refer a friend, get credits</div>
+              <div style={{ fontSize: 10.5, color: MUTED, margin: "4px 0 8px", lineHeight: 1.5 }}>
+                Share your code. Each friend who subscribes gives you <strong style={{ color: TEXT }}>+2 credits</strong>, free.
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input readOnly style={{ ...S.input, fontFamily: mono, letterSpacing: "1px" }} value={"B2W-" + (email.trim() ? email.trim().slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, "X") : "REF7") + "-42"} aria-label="Your referral code" />
+                <button className="btnO" style={{ ...S.outBtn, whiteSpace: "nowrap" }}
+                  onClick={(e) => { const c = "B2W-" + (email.trim() ? email.trim().slice(0,4).toUpperCase().replace(/[^A-Z0-9]/g,"X") : "REF7") + "-42"; if (navigator.clipboard) navigator.clipboard.writeText(c).catch(()=>{}); }}>
+                  Copy
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Sign up / Log in modal: password, then an emailed 6-digit code ── */}
+      {authModal && (() => {
+        const su = authModal === "signup";
+        return (
+          <div style={S.overlay} onClick={() => { setAuthModal(null); setPendingCity(null); setPendingLoc(false); }} role="dialog" aria-modal="true">
+            <div style={{ ...S.adModal, width: 400 }} onClick={(e) => e.stopPropagation()}>
+              <button className="cancelBtn" style={S.cancelBtn} onClick={() => { setAuthModal(null); setPendingCity(null); setPendingLoc(false); }} aria-label="Cancel">
+                Cancel
+              </button>
+              <div style={{ fontSize: 16, fontWeight: 700, color: TEXT }}>{su ? "Sign up" : "Log in"}</div>
+              <div style={{ fontSize: 11.5, color: MUTED, margin: "5px 0 14px" }}>
+                {su ? "Already have an account? " : "New here? "}
+                <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 11.5 }}
+                  onClick={() => { setAuthErr(""); setAuthModal(su ? "login" : "signup"); }}>
+                  {su ? "Log in" : "Sign up"}
+                </button>
+              </div>
+              {su && pendingCity && (
+                <div style={{ ...S.upFeature, fontSize: 11, color: MUTED, lineHeight: 1.5 }}>
+                  A free account unlocks the cached list for <strong style={{ color: TEXT }}>{pendingCity}</strong>.
+                </div>
+              )}
+              {su && pendingLoc && !pendingCity && (
+                <div style={{ ...S.upFeature, fontSize: 11, color: MUTED, lineHeight: 1.5 }}>
+                  A free account unlocks location detection and your city's cached list. Detection runs right after you sign up.
+                </div>
+              )}
+              {authStep === "code" ? (
+                <>
+                  <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.55, marginBottom: 10 }}>
+                    We emailed a 6-digit code to <strong style={{ color: TEXT }}>{email.trim()}</strong>. Enter it to {su ? "finish signing up" : "log in"}.
+                  </div>
+                  <input style={{ ...S.input, fontFamily: mono, letterSpacing: "4px", textAlign: "center", ...(authErr ? { borderColor: RED } : null) }}
+                    inputMode="numeric" maxLength={6} placeholder="000000" aria-label="Verification code"
+                    value={authCode} onChange={(e) => setAuthCode(e.target.value.replace(/[^0-9]/g, ""))} />
+                  {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
+                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center" }}
+                    onClick={() => authConfirm(su)}>
+                    Confirm code
+                  </button>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, gap: 10 }}>
+                    <button className="paneLink" style={{ ...S.paneLink, marginTop: 0 }}
+                      onClick={() => { setAuthStep("form"); setAuthErr(""); }}>
+                      Use a different email
+                    </button>
+                    <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, ...(resendLeft > 0 ? { color: FAINT, cursor: "default", textDecoration: "none" } : null) }}
+                      onClick={resendCode} disabled={resendLeft > 0}>
+                      {resendLeft > 0 ? `Resend code in ${resendLeft}s` : "Resend code"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ ...S.fLabel, marginBottom: 6 }}>Email</div>
+                  <input placeholder="email or phone number" style={{ ...S.input, ...(authErr && !email.trim() ? { borderColor: RED } : null) }}
+                    aria-label="Email or phone number" value={email} onChange={(e) => setEmail(e.target.value)} />
+                  {needsPhone(email) && (
+                    <>
+                      <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>Phone number</div>
+                      <input placeholder="(415) 555-0100" inputMode="tel" style={{ ...S.input, ...(authErr && !authPhone.trim() ? { borderColor: RED } : null) }}
+                        aria-label="Phone number" value={authPhone} onChange={(e) => setAuthPhone(e.target.value)} />
+                      <div style={{ fontSize: 10, color: FAINT, marginTop: 4 }}>Required for emails outside Gmail and Outlook.</div>
+                    </>
+                  )}
+                  <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>Password</div>
+                  <input type="password" placeholder="••••••••" className={pwShake ? "shake" : ""}
+                    style={{ ...S.input, ...((authErr && !authPw.trim()) || (pwShake) ? { borderColor: RED } : null) }}
+                    aria-label="Password" value={authPw} onChange={(e) => setAuthPw(e.target.value)} />
+                  {su && (
+                    <div style={{ fontSize: 10, color: FAINT, marginTop: 4, lineHeight: 1.5 }}>
+                      At least 15 characters, or 4+ words as a passphrase. No numbers or symbols required.
+                    </div>
+                  )}
+                  {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 8 }}>{authErr}</div>}
+                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 14, justifyContent: "center" }}
+                    onClick={() => authContinue(su, false)}>
+                    Continue
+                  </button>
+                  {su && (
+                    !refReveal ? (
+                      <button className="paneLink" style={{ ...S.paneLink, marginTop: 10 }} onClick={() => setRefReveal(true)}>
+                        Referral code?
+                      </button>
+                    ) : (
+                      <input placeholder="Referral code" style={{ ...S.input, marginTop: 10, fontFamily: mono, letterSpacing: "1px" }}
+                        aria-label="Referral code" value={authCode2} onChange={(e) => setAuthCode2(e.target.value.toUpperCase())} />
+                    )
+                  )}
+                  <div style={S.orRow}>
+                    <span style={S.orLine} />
+                    <span>OR {su ? "sign up" : "log in"} with</span>
+                    <span style={S.orLine} />
+                  </div>
+                  <div style={S.provWrap}>
+                    {[["G", "Google"], ["Lv", "Lovable"], ["B4", "Base44"]].map(([g, n]) => (
+                      <button key={n} className="provBtn" style={S.provBtn} onClick={() => signIn("free")} title={`${su ? "Sign up" : "Log in"} with ${n}`}>
+                        <span style={S.provCircle}>{g}</span>
+                        <span style={{ fontSize: 10.5, color: MUTED }}>{n}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: MUTED, marginTop: 14, textAlign: "center", lineHeight: 1.6 }}>
+                    We confirm every email {su ? "signup" : "login"} with a 6-digit code.
+                  </div>
+                  {su ? (
+                    <div style={{ fontSize: 10, color: FAINT, marginTop: 6, textAlign: "center", lineHeight: 1.6 }}>
+                      By signing up you agree to the{" "}
+                      <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10 }}>Terms of Service</button>
+                      {" "}and{" "}
+                      <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10 }}>Privacy Policy</button>.
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: FAINT, marginTop: 6, textAlign: "center" }}>
+                      Terms of Service | Privacy Policy
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Business page (full view, from search) ── */}
+      {bizPage && (() => {
+        const d = bizPage, sb = statusBits(d), rv = reviewsOf(d);
+        return (
+          <div style={S.bizPage} role="dialog" aria-modal="true" aria-label={`${d.name} page`}>
+            <div style={S.bizBar}>
+              <button style={S.brandBtn} onClick={() => setBizPage(null)} title="Back to the screener">
+                <span style={{ color: TEXT }}>B2Web</span><span style={{ color: RED, fontFamily: mono }}>.site</span>
+              </button>
+              <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px" }} onClick={() => setBizPage(null)}>Back to results</button>
+            </div>
+            <div style={S.bizScroll}><div style={S.bizInner}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 18, flexWrap: "wrap", alignItems: "flex-start" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                    <h1 style={{ fontFamily: ui, fontSize: 26, fontWeight: 700, color: TEXT, margin: 0, lineHeight: 1.15 }}>{d.name}</h1>
+                    <button className="btnO" style={{ ...S.outBtn, padding: "5px 11px", fontSize: 10.5 }}
+                      onClick={(e) => {
+                        const r = e.currentTarget.getBoundingClientRect();
+                        setShareCopied(false);
+                        setShare({ x: Math.max(8, r.left), y: r.bottom + 6, biz: d });
+                      }}>
+                      <Icon k="share" size={11} /> Share
+                    </button>
+                    <span style={S.viewPill}>
+                      <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{viewersOf(d)}</span>
+                      <span style={{ color: MUTED }}>viewing now</span>
+                      <span style={S.livePip} />
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: MUTED, marginTop: 5 }}>
+                    <button className="kvLink" style={S.kvLink} onClick={() => { setBizPage(null); setCat(d.cat); }}>{d.cat}</button>
+                    {", "}
+                    <button className="kvLink" style={S.kvLink} onClick={() => { setBizPage(null); setHood(d.hood); }}>{d.hood}</button>
+                  </div>
+                  <div style={{ fontSize: 12, color: MUTED, marginTop: 7 }}>{d.addr}, San Francisco, CA</div>
+                </div>
+                <div style={{ ...S.bizSec, minWidth: 220, maxWidth: 300, borderColor: d.status === "none" ? RED : d.status === "third" ? AMBER : LINE }}>
+                  <div style={S.bizSecT}>Website status</div>
+                  <div style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, color: d.status === "site" ? MUTED : sb.c }}>{sb.label}</div>
+                  <div style={{ fontSize: 10.5, color: MUTED, marginTop: 5, lineHeight: 1.4 }}>{sb.tip}</div>
+                </div>
+              </div>
+
+              <div style={S.bizMetrics}>
+                {[["Google rating", `${ratingOf(d).toFixed(1)}★`, `top ${Math.max(2, 40 - Math.round((ratingOf(d) - 3.4) * 22))}% locally`],
+                  ["Reviews", d.rev, d.rev > 150 ? "high demand" : d.rev > 60 ? "steady traffic" : "emerging"],
+                  ["Years listed", ageOf(d), `since ${2026 - ageOf(d)}`],
+                  ["In cache", listedLabel(d), d.listedAgoMin != null ? "just crawled" : "Jun 5 snapshot"],
+                  ...(geo ? [["Distance", `${distMi(d).toFixed(1)} mi`, `from ${geo.city}`]] : [])].map(([k, v, sub]) => (
+                  <div key={k} style={{ ...S.bizSec, padding: "10px 12px" }}>
+                    <div style={S.bizSecT}>{k}</div>
+                    <div style={{ fontFamily: mono, fontSize: 19, fontWeight: 700, color: TEXT, margin: "2px 0" }}>{v}</div>
+                    <div style={{ fontSize: 10, color: FAINT }}>{sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="bizCols" style={S.bizCols}>
+                <div style={S.bizSec}>
+                  <div style={S.bizSecT}>Contact and location</div>
+                  <div style={S.kvGrid}>
+                    <span style={S.kvK}>Address</span><span style={S.kvV}>{d.addr}, San Francisco, CA</span>
+                    <span style={S.kvK}>Phone</span>
+                    <span style={S.kvV}>
+                      <span className={copiedName === d.name ? "phoneHit" : ""}
+                        style={{ ...S.phoneSpan, ...(copiedName === d.name ? { color: GREEN, fontWeight: 700 } : null) }}
+                        onClick={() => copyPhone(d)} title="Click to copy">
+                        {copiedName === d.name ? "[COPIED]" : d.phone}
+                      </span>
+                    </span>
+                    <span style={S.kvK}>Source</span><span style={{ ...S.kvV, color: MUTED }}>Google listing, OSM, registry</span>
+                  </div>
+                  <div style={S.mapBox}><iframe title={`Map: ${d.addr}`} src={mapEmbed(d)} style={S.mapFrame} loading="lazy" /></div>
+                  <a className="bizLink" style={{ fontSize: 10.5 }} href={mapHref(d)} target="_blank" rel="noreferrer">Open full map</a>
+
+                  <div style={{ ...S.bizSecT, marginTop: 14 }}>More leads in {d.hood}</div>
+                  {(() => {
+                    const near = pool.filter((x) => x.hood === d.hood && x.name !== d.name && x.status !== "site").slice(0, 4);
+                    return near.length ? near.map((x) => (
+                      <button key={x.name} className="qItem" style={S.qItem} onClick={() => openBizPage(x)}>
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: TEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.name}</span>
+                          <span style={{ display: "block", fontSize: 9.5, color: MUTED }}>{x.cat}, {x.rev} reviews</span>
+                        </span>
+                        <span style={{ fontFamily: mono, fontSize: 9.5, fontWeight: 700, color: statusBits(x).c, flexShrink: 0 }}>{statusBits(x).label}</span>
+                      </button>
+                    )) : (
+                      <div style={{ fontSize: 10.5, color: FAINT }}>No other flagged leads cached in {d.hood}.</div>
+                    );
+                  })()}
+
+                  {!admin && (<>
+                  <div style={{ ...S.bizSecT, marginTop: 14 }}>Sponsored</div>
+                  {pageAdMode === "ad" ? (
+                    <div style={{ ...S.inFeedAd, position: "relative", height: 210 }}>
+                      advertisement
+                      <button style={S.adCancel} onClick={() => setPageAdMode("pitch")}
+                        title="Close" aria-label="Close ad">Cancel</button>
+                    </div>
+                  ) : (
+                    <div style={{ ...S.inFeedAd, position: "relative", height: 210, flexDirection: "column", gap: 10, textTransform: "none", letterSpacing: 0, fontSize: 11, color: MUTED, padding: "0 18px", textAlign: "center" }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: TEXT }}>Go unlimited</span>
+                      <span>No ads, real-time data, no caps. From $20/mo with a 1-day free trial.</span>
+                      <button className="btnP" style={{ ...S.priBtn, padding: "5px 14px", fontSize: 10.5 }}
+                        onClick={(e) => openUnlimited(e.currentTarget)}>
+                        See plans
+                      </button>
+                      <button style={S.adCancel} onClick={() => setPageAdMode("ad")}
+                        title="Back to the ad" aria-label="Close and show the ad again">Cancel</button>
+                    </div>
+                  )}
+                  </>)}
+                </div>
+                <div style={S.bizSec}>
+                  <div style={S.bizSecT}>Web presence</div>
+                  <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 8 }}>
+                    {d.status === "none"
+                      ? "No standalone website on any source. That is the pitch: demand and reputation with nowhere to send customers."
+                      : d.status === "third"
+                      ? `Only a ${d.thirdKind} page stands in for a site. A real website gives them search visibility they can own.`
+                      : "Already has a standalone site. Lower priority for a build; a redesign or SEO angle may still fit."}
+                  </div>
+                  <a className="bizLink" style={{ fontSize: 11 }} href={webHref(d)} target="_blank" rel="noreferrer">Open web presence</a>
+
+                  <div style={{ ...S.bizSecT, marginTop: 14 }}>Vulnerability flags</div>
+                  <div style={{ fontSize: 10.5, color: MUTED, lineHeight: 1.5, marginBottom: 2 }}>
+                    What their current presence cannot do. Hover any flag for the pitch.
+                  </div>
+                  <VulnFlags d={d} />
+
+                  <div style={{ ...S.bizSecT, marginTop: 14 }}>Recommended AI prompt <span style={S.proTag}>PRO</span></div>
+                  <div style={{ position: "relative" }}>
+                    <div className={admin ? "" : "blurLock"} style={{ ...S.upFeature, marginBottom: 0, fontSize: 10.5, color: MUTED, lineHeight: 1.55 }}>
+                      {aiPromptOf(d)}
+                    </div>
+                    {!admin && (
+                      <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <span style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: TEXT, background: PANEL, border: `1px solid ${LINE}`, borderRadius: 2, padding: "3px 8px" }}>
+                          Paid plans unlock this prompt
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 8, justifyContent: "center", ...(copiedPrompt ? { background: GREEN, borderColor: GREEN } : null) }}
+                    onClick={(e) => {
+                      if (admin) { copyPrompt(d); return; }
+                      openUnlimited(e.currentTarget, { title: "AI build prompts", body: "A ready-to-paste prompt per business, written from its live data: the presence gap, reviews, category, and contact details. Drop it into Lovable, v0, or Bolt and scaffold their site in minutes." });
+                    }}>
+                    {copiedPrompt ? "Copied to clipboard" : "Copy to Lovable"}
+                  </button>
+                  <div style={{ fontSize: 9.5, color: FAINT, marginTop: 4 }}>Paste into Lovable, v0, or Bolt to scaffold their site.</div>
+
+                  <div style={{ ...S.bizSecT, marginTop: 14 }}>Google reviews</div>
+                  <div style={{ fontSize: 10, color: FAINT, fontFamily: mono, marginBottom: 6 }}>{rv.total} total, {rv.sampled} sampled</div>
+                  <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", ...(copiedRev ? { background: GREEN, borderColor: GREEN } : null) }}
+                    onClick={() => copyReviews(d)}>
+                    {copiedRev ? <>Copied {rv.sampled} reviews to clipboard</> : <><Icon k="copy" size={12} /> Copy all reviews <span style={S.proTag}>PRO</span></>}
+                  </button>
+                  {rv.list.slice(0, 3).map((r, i) => (
+                    <div key={i} style={{ ...S.upFeature, marginTop: 8, marginBottom: 0 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: TEXT }}>{r.author}</span>
+                        <span style={{ fontFamily: mono, fontSize: 10, color: AMBER }}>{"★".repeat(r.stars)}{"☆".repeat(5 - r.stars)}</span>
+                      </div>
+                      <div style={{ fontSize: 10.5, color: MUTED, marginTop: 3, lineHeight: 1.4 }}>{r.body}</div>
+                      <div style={{ fontSize: 9.5, color: FAINT, marginTop: 3 }}>{r.when}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <SiteFooter onHelp={() => { setBizPage(null); setInfoPage("help"); }} />
+            </div></div>
+          </div>
+        );
+      })()}
+
+      {/* ── "Detect my location" popover, anchored under Request your location ── */}
+      {locPrompt && (
+        <div ref={locPromptRef} style={{ ...S.locPop, left: locPrompt.x, top: locPrompt.y }} role="dialog" aria-label="Detect my location">
+          <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 10 }}>
+            Ask our servers to resolve your approximate city from your connection, then sort businesses nearest to you. Your browser is never prompted.
+          </div>
+          <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }}
+            onClick={() => {
+              setLocPrompt(null);
+              if (!authed && !admin) { setPendingLoc(true); setAuthModal("signup"); return; }
+              locate();
+            }}>
+            <Icon k="target" size={12} /> {authed || admin ? "Request your location" : "Request your location"}
+          </button>
+          {!authed && !admin && (
+            <div style={{ fontSize: 10, color: FAINT, marginTop: 8, lineHeight: 1.5 }}>
+              Only the San Francisco cache is public. Sign up free and we'll notify you the moment your city's cache is posted.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Sticky ad bar (bottom): the free tier never removes it. Collapse
+             swaps the ad for a Go-unlimited pitch; Cancel restores the ad. ── */}
+      {/* ── Share popover: copy link or post to X ── */}
+      {share && (
+        <div ref={shareRef} style={{ ...S.locPop, width: 210, zIndex: 74, left: share.x, top: share.y, padding: 4 }} role="menu" aria-label="Share">
+          <button className="acctItem" style={S.acctItem} role="menuitem"
+            onClick={() => {
+              if (navigator.clipboard) navigator.clipboard.writeText(bizUrl(share.biz)).catch(() => {});
+              setShareCopied(true);
+              setTimeout(() => setShare(null), 900);
+            }}>
+            {shareCopied ? "Link copied" : "Copy link"}
+          </button>
+          <button className="acctItem" style={S.acctItem} role="menuitem"
+            onClick={() => {
+              const t = `${share.biz.name} has ${statusBits(share.biz).label.toLowerCase()} and ${share.biz.rev} Google reviews. Found on b2web.site`;
+              window.open(`https://x.com/intent/tweet?text=${encodeURIComponent(t)}&url=${encodeURIComponent(bizUrl(share.biz))}`, "_blank", "noopener");
+              setShare(null);
+            }}>
+            Post to X
+          </button>
+        </div>
+      )}
+
+      {/* ── About / Help pages (full view) ── */}
+      {infoPage && (
+        <div style={S.bizPage} role="dialog" aria-modal="true" aria-label={infoPage === "about" ? "About b2web.site" : "Help"}>
+          <div style={S.bizBar}>
+            <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px" }} onClick={() => setInfoPage(null)}>Back to results</button>
+            <span style={{ fontFamily: ui, fontSize: 14, fontWeight: 700 }}>
+              <span style={{ color: TEXT }}>B2Web</span><span style={{ color: RED, fontFamily: mono }}>.site</span>
+            </span>
+          </div>
+          <div style={S.bizScroll}><div style={{ ...S.bizInner, maxWidth: 720 }}>
+            {infoPage === "about" ? (
+              <>
+                <h1 style={S.infoH1}>About B2Web.site</h1>
+                <p style={S.infoP}>
+                  B2Web.site is a screener for local businesses that are missing the one thing that
+                  matters online: a working website. We fuse OpenStreetMap, state business registries,
+                  and Google listing checks, verify every listed URL ourselves, and cache the result so
+                  browsing stays fast. Red means no website at all; amber means a social page is
+                  standing in for one.
+                </p>
+                <p style={S.infoP}>
+                  Free shows the shared San Francisco snapshot, ad-supported. A free account unlocks
+                  your own city's cached list, and the paid plans run live crawls of any city with no
+                  caps. Built for web designers, SEO freelancers, and small agencies who sell websites
+                  to the businesses that need them most.
+                </p>
+                <div style={S.bizSec}>
+                  <div style={S.bizSecT}>Follow b2website</div>
+                  <a className="bizLink" style={{ display: "block", marginBottom: 6 }} href="https://instagram.com/b2website" target="_blank" rel="noreferrer">instagram.com/b2website</a>
+                  <a className="bizLink" style={{ display: "block" }} href="https://x.com/b2website" target="_blank" rel="noreferrer">x.com/b2website</a>
+                </div>
+              </>
+            ) : (
+              <>
+                <h1 style={S.infoH1}>How to use B2Web.site</h1>
+                <p style={S.infoP}>
+                  Every row is a checked San Francisco business, and the website status column is the
+                  product: red rows have no website at all. Filter by category, reviews, and stars,
+                  request your location to sort nearest first, and click any row for the quick pane or
+                  search to open a full business page. Copy phones with one click, pull the full review
+                  dump, and grab the AI build prompt to scaffold their site.
+                </p>
+                <div style={S.bizSec}>
+                  <div style={S.bizSecT}>Keybinds</div>
+                  <div style={{ ...S.kvGrid, gridTemplateColumns: "120px 1fr", marginBottom: 0 }}>
+                    {[["↑ / ↓", "Move through rows"], ["Enter", "Focus lead notes"], ["C", "Copy the selected phone"],
+                      ["R", "Copy all reviews"], ["W", "Open web presence"], ["M", "Open the map"],
+                      ["/", "Focus the search bar"], ["ArrowLeft", "Close the business page"],
+                      ["Esc", "Close panels and popovers"], ["Cmd/Ctrl K", "Jump to Request your location"]].map(([k, v]) => (
+                      <React.Fragment key={k}>
+                        <span><kbd>{k}</kbd></span>
+                        <span style={{ color: MUTED, fontSize: 11.5 }}>{v}</span>
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+                <p style={{ ...S.infoP, fontSize: 11 }}>
+                  The free slice is 20 rows from the shared cache; an ad unlocks 20 more, and the paid
+                  plans remove every cap with live crawls. The ADMIN switch in the corner simulates the
+                  top paid tier for testing.
+                </p>
+              </>
+            )}
+            <SiteFooter onHelp={() => setInfoPage("help")} />
+          </div></div>
+        </div>
+      )}
+
+      {/* ── 2-minute wall: full-page signup gate, cannot be dismissed ── */}
+      {wall && !authed && !admin && (
+        <div style={S.gate} role="dialog" aria-modal="true" aria-label="Create a free account">
+          <div style={S.gateLeft}>
+            <div style={{ fontFamily: ui, fontSize: 16, fontWeight: 700 }}>
+              <span style={{ color: TEXT }}>B2Web</span><span style={{ color: RED, fontFamily: mono }}>.site</span>
+            </div>
+            <div style={{ maxWidth: 340, width: "100%", margin: "auto 0", alignSelf: "center" }}>
+              {authStep === "code" ? (
+                <>
+                  <h1 style={{ fontFamily: ui, fontSize: 24, fontWeight: 700, color: TEXT, margin: "0 0 14px" }}>Check your email</h1>
+                  <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.55, marginBottom: 10 }}>
+                    We emailed a 6-digit code to <strong style={{ color: TEXT }}>{email.trim()}</strong>.
+                  </div>
+                  <input style={{ ...S.input, fontFamily: mono, letterSpacing: "4px", textAlign: "center", ...(authErr ? { borderColor: RED } : null) }}
+                    inputMode="numeric" maxLength={6} placeholder="000000" aria-label="Verification code"
+                    value={authCode} onChange={(e) => setAuthCode(e.target.value.replace(/[^0-9]/g, ""))} />
+                  {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
+                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center" }}
+                    onClick={() => authConfirm(gateMode === "signup")}>
+                    Confirm code
+                  </button>
+                  <button className="paneLink" style={{ ...S.paneLink, marginTop: 10 }}
+                    onClick={() => { setAuthStep("form"); setAuthErr(""); }}>
+                    Use a different email
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h1 style={{ fontFamily: ui, fontSize: 24, fontWeight: 700, color: TEXT, margin: "0 0 18px" }}>
+                    {gateMode === "signup" ? "Create a free account" : "Log in to continue"}
+                  </h1>
+                  <button className="btnO" style={{ ...S.outBtn, width: "100%", justifyContent: "center", background: PANEL2 }}
+                    onClick={() => signIn("free")}>
+                    <span style={{ fontFamily: mono, fontWeight: 700 }}>G</span> {gateMode === "signup" ? "Sign up" : "Log in"} with Google
+                  </button>
+                  {gateMode === "signup" && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                      <button className="btnO" style={{ ...S.outBtn, flex: 1, justifyContent: "center", background: PANEL2 }} onClick={() => signIn("free")}>
+                        <span style={{ fontFamily: mono, fontWeight: 700 }}>Lv</span> Lovable
+                      </button>
+                      <button className="btnO" style={{ ...S.outBtn, flex: 1, justifyContent: "center", background: PANEL2 }} onClick={() => signIn("free")}>
+                        <span style={{ fontFamily: mono, fontWeight: 700 }}>B4</span> Base44
+                      </button>
+                    </div>
+                  )}
+                  {gateMode === "signup" && (
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10.5, color: MUTED, margin: "10px 0 0", cursor: "pointer" }}>
+                      <span style={S.cbWrap}>
+                        <input type="checkbox" className="cbInput" checked={gateConsent} onChange={(e) => setGateConsent(e.target.checked)}
+                          style={S.cbInput} aria-label="Receive product updates" />
+                        <span style={{ ...S.cbBox, ...(gateConsent ? { background: BLUE_DEEP, borderColor: BLUE_DEEP } : null) }} aria-hidden="true">
+                          {gateConsent && (
+                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>
+                          )}
+                        </span>
+                      </span>
+                      I agree to receive the latest product updates and special offers
+                    </label>
+                  )}
+                  <div style={S.orRow}>
+                    <span style={S.orLine} />
+                    <span>Or continue with</span>
+                    <span style={S.orLine} />
+                  </div>
+                  {!gateEmail ? (
+                    <button className="btnO" style={{ ...S.outBtn, width: "100%", marginTop: 14, justifyContent: "center" }}
+                      onClick={() => setGateEmail(true)}>
+                      Email
+                    </button>
+                  ) : (
+                    <div style={{ marginTop: 14 }}>
+                      <input placeholder="email or phone number" style={{ ...S.input, ...(authErr && !email.trim() ? { borderColor: RED } : null) }}
+                        aria-label="Email or phone number" value={email} onChange={(e) => setEmail(e.target.value)} />
+                      {needsPhone(email) && (
+                        <input placeholder="Phone number" inputMode="tel" style={{ ...S.input, marginTop: 8, ...(authErr && !authPhone.trim() ? { borderColor: RED } : null) }}
+                          aria-label="Phone number" value={authPhone} onChange={(e) => setAuthPhone(e.target.value)} />
+                      )}
+                      <input type="password" placeholder="Password" style={{ ...S.input, marginTop: 8, ...(authErr && !authPw.trim() ? { borderColor: RED } : null) }}
+                        aria-label="Password" value={authPw} onChange={(e) => setAuthPw(e.target.value)} />
+                      {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
+                      <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 10, justifyContent: "center" }}
+                        onClick={() => authContinue(gateMode === "signup", true)}>
+                        Continue
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div style={{ fontSize: 11.5, color: MUTED, alignSelf: "center" }}>
+              {gateMode === "signup" ? "Already have an account? " : "New here? "}
+              <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 11.5 }}
+                onClick={() => { setGateMode(gateMode === "signup" ? "login" : "signup"); setAuthStep("form"); setAuthErr(""); }}>
+                {gateMode === "signup" ? "Log in" : "Sign up"}
+              </button>
+            </div>
+          </div>
+          <div className="gateRight" style={S.gateRight}>
+            <div style={{ maxWidth: 360, fontSize: 13, color: TEXT, lineHeight: 1.65 }}>
+              "b2web found me eleven no-website barbershops in one afternoon. Two signed for full builds within the week."
+            </div>
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Dana R.</div>
+              <div style={{ fontSize: 10.5, color: MUTED }}>Freelance web designer</div>
+            </div>
+            <div style={{ fontSize: 10.5, color: MUTED, marginTop: 10 }}>Trusted by web designers and agencies</div>
+            <div style={{ display: "flex", gap: 22, flexWrap: "wrap", justifyContent: "center", fontFamily: mono, fontSize: 11, fontWeight: 700, color: MUTED }}>
+              <span>PIXELFORGE</span><span>RankLab SEO</span><span>NorthBeam Web</span><span>CastroSites</span>
+            </div>
+            <div style={{ fontSize: 10, color: FAINT }}>and more...</div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Admin QA switch (fixed, bottom-right) ── */}
+      <div className="adminDock" style={{ position: "fixed", right: 12, bottom: admin ? 10 : 100, zIndex: 95, display: "flex", gap: 6 }}>
+        {admin && (
+          <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(ultra ? { color: RED, borderColor: RED } : null) }}
+            onClick={() => setUltra((u) => !u)} aria-pressed={ultra}
+            title="ULTRA demo: hyper-live real-time cache with fast-moving statistics">
+            ULTRA{ultra ? ": ON" : ""}
+          </button>
+        )}
+        <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(admin ? S.adminOn : null) }}
+          onClick={() => {
+            if (admin) { setAdmin(false); return; }
+            setAdminPw(""); setAdminErr(false); setAdminAsk(true);
+          }}
+          aria-pressed={admin}
+          title="Admin test mode (password protected): unlocks every paid gate for QA">
+          ADMIN{admin ? ": ON" : ""}
+        </button>
+      </div>
+
+      {/* ── Admin password modal (window.prompt is blocked in sandboxed frames) ── */}
+      {adminAsk && (
+        <div style={{ ...S.overlay, zIndex: 96 }} onClick={() => setAdminAsk(false)} role="dialog" aria-modal="true">
+          <div style={{ ...S.adModal, width: 320 }} onClick={(e) => e.stopPropagation()}>
+            <button className="cancelBtn" style={S.cancelBtn} onClick={() => setAdminAsk(false)} aria-label="Cancel">Cancel</button>
+            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 4 }}>Admin mode</div>
+            <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 12 }}>Unlocks every paid gate for testing.</div>
+            <input type="password" autoFocus placeholder="Password" className={adminErr ? "shake" : ""}
+              style={{ ...S.input, ...(adminErr ? { borderColor: RED } : null) }}
+              aria-label="Admin password" value={adminPw}
+              onChange={(e) => { setAdminPw(e.target.value); setAdminErr(false); }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                if (adminPw === "123") { setAdmin(true); setAdminAsk(false); }
+                else { setAdminErr(true); setTimeout(() => setAdminErr(false), 420); }
+              }} />
+            {adminErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>Incorrect password.</div>}
+            <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center" }}
+              onClick={() => {
+                if (adminPw === "123") { setAdmin(true); setAdminAsk(false); }
+                else { setAdminErr(true); setTimeout(() => setAdminErr(false), 420); }
+              }}>
+              Unlock
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Compare drawer: Pro side-by-side of selected businesses ── */}
+      {cmpActive && compare.size > 0 && (() => {
+        const picks = pool.filter((d) => compare.has(d.name)).slice(0, 4);
+        return (
+          <div style={S.cmpDrawer} role="region" aria-label="Compare businesses">
+            <div style={S.cmpHead}>
+              <span style={{ fontFamily: mono, fontSize: 10.5, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: TEXT }}>
+                Comparing {picks.length}{compare.size > 4 ? " of " + compare.size + " (first 4)" : ""}
+              </span>
+              <button className="paneLink" style={{ ...S.paneLink, marginTop: 0 }} onClick={() => setCompare(new Set())}>Clear all</button>
+            </div>
+            <div style={S.cmpGrid}>
+              {picks.map((d) => {
+                const sb = statusBits(d);
+                return (
+                  <div key={d.name} style={S.cmpCard}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "flex-start" }}>
+                      <button className="bizLink" style={{ ...S.paneLink, marginTop: 0, fontWeight: 700, textAlign: "left" }} onClick={() => openBizPage(d)}>{d.name}</button>
+                      <button className="cancelBtn" style={{ ...S.cancelBtn, position: "static", fontSize: 9 }} onClick={() => toggleCmp(d.name)} aria-label={`Remove ${d.name}`}>Cancel</button>
+                    </div>
+                    <div style={{ fontSize: 10, color: MUTED, marginBottom: 6 }}>{d.cat}, {d.hood}</div>
+                    <div style={{ ...S.kvGrid, gridTemplateColumns: "auto 1fr", rowGap: 2, marginBottom: 0, fontSize: 10.5 }}>
+                      <span style={S.kvK}>Status</span><span style={{ fontFamily: mono, fontWeight: 700, color: sb.c }}>{sb.label}</span>
+                      <span style={S.kvK}>Rating</span><span style={S.kvV}>{ratingOf(d).toFixed(1)}★</span>
+                      <span style={S.kvK}>Reviews</span><span style={S.kvV}>{d.rev}</span>
+                      <span style={S.kvK}>Phone</span><span style={{ ...S.kvV, fontFamily: mono }}>{d.phone}</span>
+                      {geo && <><span style={S.kvK}>Distance</span><span style={S.kvV}>{distMi(d).toFixed(1)} mi</span></>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Current viewers (fixed, bottom-left): live social-proof tension ── */}
+      <div style={S.viewersDock} title="People viewing the San Francisco cache right now">
+        <Icon k="user" size={12} />
+        <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{viewers}</span>
+        <span style={{ color: MUTED }}>viewing now</span>
+        <span style={S.livePip} />
+      </div>
+
+      {/* ── Alert toast: drops from the top center, previews a new listing ── */}
+      {alertToast && (
+        <div className="alertToast" style={S.alertToast} role="status" aria-live="polite">
+          <div style={S.alertHead}>
+            <span>New no-website listing: {locCity}</span>
+            <button className="adDockBtn" style={S.adDockBtn}
+              onClick={() => setAlertToast(null)} title="Cancel" aria-label="Cancel alert">Cancel</button>
+          </div>
+          <div style={{ padding: "9px 10px 11px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: TEXT }}>{alertToast.biz.name}</span>
+              <span style={{ fontSize: 10, color: FAINT, whiteSpace: "nowrap" }}>listed {alertToast.ago}m ago</span>
+            </div>
+            <div style={{ fontSize: 10.5, color: MUTED, marginTop: 3 }}>
+              {alertToast.biz.cat}, {alertToast.biz.addr}, {alertToast.biz.hood}
+            </div>
+            <div style={{ fontSize: 10.5, marginTop: 5 }}>
+              <span style={{ color: RED, fontWeight: 700, fontFamily: mono }}>No website</span>
+              <span style={{ color: FAINT }}>, {alertToast.biz.rev} reviews, {ratingOf(alertToast.biz).toFixed(1)}★</span>
+              {geo && <span style={{ color: FAINT }}>, {distMi(alertToast.biz).toFixed(1)} mi</span>}
+            </div>
+            <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", marginTop: 10 }}
+              onClick={() => { openBizPage(alertToast.biz); setAlertToast(null); }}>
+              Open the full listing
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── First-visit tour: 3 steps ── */}
+      {tour != null && (
+        <TourOverlay step={tour} onNext={nextTour} onBack={() => setTour((t) => Math.max(0, (t || 0) - 1))} onSkip={endTour}
+          email={email} setEmail={setEmail}
+          onLogin={() => { endTour(); setAuthModal("login"); }}
+          onSignup={() => { signIn("free"); endTour(); }} />
+      )}
+    </div>
+  );
+}
+
+function Th({ k, label, sort, onSort, style }) {
+  return (
+    <th scope="col" style={{ ...S.th, cursor: "pointer", ...style }} onClick={() => onSort(k)}
+      aria-sort={sort.key === k ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+      {label} {sort.key === k && <Caret dir={sort.dir} />}
+    </th>
+  );
+}
+
+// ── First-visit tour: 4 slides (big visual, title, dots, Next; the last is
+// a signup page). Sized like an app-launch modal; palette stays on the theme
+// tokens. The overlay is not click-away dismissable: the only exits are the
+// signup slide's two bottom buttons (Continue as guest left, Sign up right,
+// with Sign up occupying the exact spot Next held on the slides before it).
+function TourOverlay({ step, onNext, onBack, onSkip, email, setEmail, onLogin, onSignup }) {
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState(false);
+  const [shake, setShake] = useState(0);
+  const trySignup = () => {
+    if (!email.trim() || !pw.trim()) { setErr(true); setShake((n) => n + 1); return; }
+    onSignup();
+  };
+  const steps = [
+    {
+      title: "Every red row is a lead",
+      body: "This screener lists real San Francisco businesses from a checked cache. The website status column is the product: red means no website at all, amber means social only.",
+      vis: (
+        <div style={{ width: 380, maxWidth: "100%", border: `1px solid ${RULE}`, borderRadius: 2, background: PANEL, overflow: "hidden" }}>
+          {[["Castro Classic Cuts", "No website", RED], ["Mission Cut House", "Facebook only", AMBER], ["Geary Barber Co.", "No website", RED]].map(([n, st, c], i) => (
+            <div key={n} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", borderBottom: i < 2 ? `1px solid ${LINE}` : "none", fontSize: 11.5 }}>
+              <span style={{ color: TEXT }}>{n}</span>
+              <span style={{ color: c, fontWeight: 700, fontFamily: mono, fontSize: 11 }}>{st}</span>
+            </div>
+          ))}
+        </div>
+      ),
+    },
+    {
+      title: "Filter to your kind of lead",
+      body: "Category, reviews, and stars are free presets. Pro unlocks the rest: real-time crawls of any city, no result caps, CSV and bulk export, saved lists, contact enrichment, alerts, and comparing several businesses at once. Starter is 40 credits a month; Ultra is 400.",
+      vis: (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
+          {["Category: Barber shop", "Min reviews: 25+", "Min stars: 4.0★"].map((t) => (
+            <span key={t} style={{ ...S.select, display: "inline-flex", alignItems: "center", minWidth: 0, pointerEvents: "none" }}>{t}</span>
+          ))}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 11.5, color: TEXT }}>
+            <span style={{ ...S.cbBox, ...S.cbBoxOn }}>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>
+            </span>
+            No website only
+          </span>
+        </div>
+      ),
+    },
+    {
+      title: "Work rows fast",
+      body: "Click a row for detail and lead notes. Click a phone number to copy it silently. 20 rows are free, an ad unlocks 20 more, and the real-time cache removes every cap.",
+      vis: (
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 13, fontFamily: mono, marginBottom: 14, fontVariantNumeric: "tabular-nums" }}>
+            <span style={{ color: TEXT }}>(415) 555-0184</span>
+            <span style={{ color: GREEN, fontWeight: 700, marginLeft: 10 }}>[COPIED]</span>
+          </div>
+          <div style={{ fontSize: 11, color: MUTED }}>
+            <kbd>↑</kbd><kbd>↓</kbd> Rows | <kbd>Enter</kbd> Notes | <kbd>C</kbd> Copy phone | <kbd>W</kbd> Web presence
+          </div>
+        </div>
+      ),
+    },
+  ];
+  const isSignup = step === 3;
+  const st = steps[step];
+  const total = steps.length + 1;
+  return (
+    <div style={{ ...S.overlay, zIndex: 70 }} role="dialog" aria-modal="true" aria-label="Quick tour">
+      <div style={S.tourCard}>
+        {isSignup ? (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 26px", overflow: "hidden" }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: TEXT, textAlign: "center" }}>Create your free account</div>
+            <div style={{ fontSize: 11.5, color: MUTED, textAlign: "center", margin: "5px 0 12px" }}>
+              Already have an account?{" "}
+              <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 11.5 }} onClick={onLogin}>Log in</button>
+            </div>
+            <div key={shake} className={shake ? "shake" : ""} style={{ maxWidth: 360, margin: "0 auto", width: "100%" }}>
+              <div style={{ display: "flex", gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ ...S.fLabel, marginBottom: 5 }}>Email</div>
+                  <input style={{ ...S.input, ...(err && !email.trim() ? { borderColor: RED } : null) }}
+                    placeholder="email or phone number" aria-label="Email or phone number"
+                    value={email} onChange={(e) => setEmail(e.target.value)} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ ...S.fLabel, marginBottom: 5 }}>Password</div>
+                  <input type="password" style={{ ...S.input, ...(err && !pw.trim() ? { borderColor: RED } : null) }}
+                    placeholder="••••••••" aria-label="Password"
+                    value={pw} onChange={(e) => setPw(e.target.value)} />
+                </div>
+              </div>
+              {err && (!email.trim() || !pw.trim()) && (
+                <div style={{ color: RED, fontSize: 10.5, marginTop: 8, textAlign: "center" }}>Must fill in required fields.</div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={S.tourVis}>{st.vis}</div>
+            <div style={{ flex: 1, padding: "18px 26px 0", textAlign: "center" }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: TEXT }}>{st.title}</div>
+              <p style={{ fontSize: 12, color: MUTED, lineHeight: 1.6, margin: "8px auto 0", maxWidth: 420 }}>{st.body}</p>
+            </div>
+          </>
+        )}
+        <div style={S.tourDots}>
+          {Array.from({ length: total }).map((_, i) => <span key={i} style={S.tourDot(i === step)} />)}
+        </div>
+        <div style={S.tourFoot}>
+          {isSignup ? (
+            <>
+              <span style={{ display: "flex", gap: 8 }}>
+                <button className="btnO" style={S.outBtn} onClick={onBack}>Back</button>
+                <button className="btnO" style={S.outBtn} onClick={onSkip}>Continue as guest</button>
+              </span>
+              <button className="btnP" style={S.priBtn} onClick={trySignup}>Sign up</button>
+            </>
+          ) : (
+            <>
+              <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {step > 0 && <button className="btnO" style={{ ...S.outBtn, padding: "5px 12px" }} onClick={onBack}>Back</button>}
+                <span style={{ fontSize: 10.5, color: MUTED, textTransform: "uppercase", letterSpacing: "0.5px" }}>b2web.site | quick tour | {step + 1}/{total}</span>
+              </span>
+              <button className="btnP" style={S.priBtn} onClick={onNext}>Next</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Vulnerability flags ─────────────────────────────────────────────────────
+// For social-only leads, name exactly what the platform cannot do. This is the
+// technical ammo an agency uses the moment the owner picks up the phone.
+const VULN = {
+  NO_SEO_INDEX: "Their page barely ranks. Link aggregators and social profiles are thin, near-duplicate pages that Google will not surface for local searches like \"barber near me\".",
+  NO_CUSTOM_DOMAIN: "They do not own their address. The URL belongs to the platform, so the brand, the traffic, and the SEO equity are rented, not owned.",
+  NO_PIXEL_FOUND: "No ad-tracking pixel detected. They cannot retarget visitors, measure a campaign, or build a lookalike audience from the people who already found them.",
+  NO_BOOKING_FLOW: "No way to book or quote on the page. Every lead has to call during business hours or walk in.",
+};
+const vulnsOf = (d) => {
+  if (d.status === "none") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND", "NO_BOOKING_FLOW"];
+  if (d.status !== "third") return [];
+  const k = d.thirdKind;
+  if (k === "Linktree") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND", "NO_BOOKING_FLOW"];
+  if (k === "Instagram") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_BOOKING_FLOW"];
+  return ["NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND"]; // Facebook indexes, but rents the domain
+};
+function VulnFlags({ d }) {
+  const v = vulnsOf(d);
+  if (!v.length) return null;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>
+      {v.map((k) => (
+        <span key={k} style={S.vuln} title={VULN[k]}>[{k}]</span>
+      ))}
+    </div>
+  );
+}
+
+// ── Site footer: link row, data credit, copyright ────────────────────────────
+function SiteFooter({ onHelp }) {
+  const links = [
+    ["Affiliate", "https://b2web.site/affiliate"], ["Advertise", "https://b2web.site/advertise"],
+    ["Careers", "https://b2web.site/careers"], ["Contact", "https://b2web.site/contact"],
+    ["Blog", "https://b2web.site/blog"],
+  ];
+  return (
+    <div style={S.siteFoot}>
+      <div style={S.siteFootRow}>
+        {links.map(([t, h]) => (
+          <React.Fragment key={t}>
+            <a className="footLink" style={S.footLink} href={h} target="_blank" rel="noreferrer">{t}</a>
+            <span style={{ color: FAINT }}> • </span>
+          </React.Fragment>
+        ))}
+        <button className="footLink" style={{ ...S.footLink, background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: ui }} onClick={onHelp}>Help</button>
+        <span style={{ color: FAINT }}> • </span>
+        <a className="footLink" style={S.footLink} href="https://b2web.site/privacy" target="_blank" rel="noreferrer">Privacy</a>
+        <span style={{ color: FAINT }}> • </span>
+        <a className="footLink" style={S.footLink} href="https://x.com/b2website" target="_blank" rel="noreferrer">Follow us on X</a>
+        <span style={{ color: FAINT }}> • </span>
+        <a className="footLink" style={S.footLink} href="https://b2web.site/privacy" target="_blank" rel="noreferrer">Do Not Sell My Personal Information</a>
+      </div>
+      <div style={S.siteFootLine}>Business data provided by OpenStreetMap contributors, public registries, and our own listed-URL checks.</div>
+      <div style={S.siteFootLine}>Copyright ©2026 b2web.site All Rights Reserved.</div>
+    </div>
+  );
+}
+
+// ── styles ───────────────────────────────────────────────────────────────────
+// One family, terminal-style: differentiate with size, weight, case, and color.
+const ui = "'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif";
+const mono = "'IBM Plex Mono', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace";
+
+const S = {
+  root: { background: BG, color: TEXT, minHeight: "100vh", fontFamily: ui, fontSize: 12 },
+
+  topbar: { position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 20px", borderBottom: `1px solid ${LINE}`, flexWrap: "wrap" },
+  brandWrap: { display: "flex", alignItems: "center", gap: 14, minWidth: 0 },
+  brandBtn: { fontFamily: ui, fontSize: 14, fontWeight: 700, letterSpacing: "-0.3px", whiteSpace: "nowrap", background: "none", border: "none", padding: 0, cursor: "pointer" },
+  topMeta: { display: "flex", alignItems: "center", gap: 10 },
+  centerUnit: { position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", display: "flex", alignItems: "stretch", gap: 0, zIndex: 5, maxWidth: "52vw" },
+  searchWrapInner: { position: "relative", width: "min(360px, 30vw)", minWidth: 150 },
+  cityBtn: { display: "inline-flex", alignItems: "center", gap: 6, marginLeft: -1, padding: "0 12px", background: PANEL2, border: `1px solid ${RULE}`, borderLeft: "none", borderRadius: "0 2px 2px 0", color: MUTED, fontFamily: ui, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" },
+  searchWrap: { position: "relative" },
+  viewersDock: { position: "fixed", left: 12, bottom: 12, zIndex: 46, display: "inline-flex", alignItems: "center", gap: 7, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, padding: "6px 11px", fontFamily: ui, fontSize: 11, color: MUTED, boxShadow: "0 8px 24px var(--shadow-strong)" },
+  viewPill: { display: "inline-flex", alignItems: "center", gap: 6, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, padding: "4px 9px", fontFamily: ui, fontSize: 10.5, color: MUTED },
+  livePip: { width: 6, height: 6, borderRadius: 9, background: GREEN, boxShadow: `0 0 6px ${GREEN}` },
+  searchInput: { width: "100%", boxSizing: "border-box", background: PANEL2, border: `1px solid ${RULE}`, borderRadius: "2px 0 0 2px", color: TEXT, fontFamily: ui, fontSize: 11.5, padding: "6px 10px 6px 29px", outline: "none" },
+  searchIcon: { position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: MUTED, display: "inline-flex", pointerEvents: "none" },
+  utcClock: { fontFamily: mono, fontSize: 10.5, color: TEXT, letterSpacing: "0.5px", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
+  adCancel: { position: "absolute", top: 4, right: 6, background: "none", border: "none", fontFamily: ui, fontSize: 10, color: MUTED, cursor: "pointer", padding: "2px 4px", lineHeight: 1 },
+  guardNote: { position: "fixed", inset: 0, zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" },
+  guardBadge: { fontFamily: mono, fontSize: 10, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: TEXT, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 2, padding: "8px 14px", boxShadow: "0 14px 38px var(--shadow-strong)" },
+  hdrLink: { background: "none", border: "none", padding: "2px 4px", fontFamily: ui, fontSize: 11, fontWeight: 600, color: MUTED, cursor: "pointer", whiteSpace: "nowrap" },
+  tierChip: { fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.8px", padding: "3px 7px", borderRadius: 2, border: `1px solid ${RULE}`, color: GREEN, whiteSpace: "nowrap" },
+  acctMenu: { position: "absolute", top: "calc(100% + 6px)", right: 0, minWidth: 172, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 60, padding: 4, display: "block" },
+  acctItem: { display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderRadius: 2, padding: "8px 10px", fontFamily: ui, fontSize: 11.5, color: TEXT, cursor: "pointer" },
+  sysRead: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8, fontFamily: mono, whiteSpace: "nowrap" },
+  sysK: { fontSize: 8.5, textTransform: "uppercase", letterSpacing: "0.7px", color: MUTED, fontWeight: 700 },
+  sysV: { fontSize: 10.5, color: TEXT, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
+  siteFoot: { marginTop: 14, paddingTop: 12, borderTop: `1px solid ${LINE}`, fontSize: 10.5, color: MUTED, lineHeight: 1.7 },
+  siteFootRow: { display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: 4 },
+  footLink: { color: MUTED, textDecoration: "none", fontSize: 10.5 },
+  siteFootLine: { color: FAINT, fontSize: 10, marginTop: 6 },
+  infoH1: { fontFamily: ui, fontSize: 24, fontWeight: 700, color: TEXT, margin: 0, lineHeight: 1.2 },
+  infoP: { fontSize: 12.5, color: MUTED, lineHeight: 1.65, margin: 0 },
+  gate: { position: "fixed", inset: 0, zIndex: 80, background: BG, display: "flex" },
+  gateLeft: { flex: "1 1 55%", minWidth: 0, display: "flex", flexDirection: "column", gap: 24, padding: "30px 48px 34px", overflowY: "auto" },
+  gateRight: { flex: "1 1 45%", background: PANEL, borderLeft: `1px solid ${LINE}`, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "40px 48px", textAlign: "center", gap: 22 },
+  searchDrop: { position: "absolute", top: "calc(100% + 5px)", left: 0, right: 0, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 55, overflow: "hidden" },
+  qItem: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${LINE}`, padding: "7px 11px", cursor: "pointer", fontFamily: ui },
+  locBtn: { display: "flex", alignItems: "center", gap: 7, background: PANEL2, border: `1px solid ${RULE}`, borderRadius: 2, padding: "6px 10px", fontFamily: ui, fontSize: 11, fontWeight: 700, cursor: "pointer", color: TEXT, whiteSpace: "nowrap" },
+  themeBtn: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, background: "transparent", border: "none", borderRadius: 2, color: MUTED, cursor: "pointer", flexShrink: 0, padding: 0 },
+
+  upPop: { position: "fixed", width: 440, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 72, padding: "12px 13px" },
+  billSeg: { display: "inline-flex", border: `1px solid ${LINE}`, borderRadius: 2, overflow: "hidden" },
+  billBtn: { fontFamily: ui, fontSize: 10, fontWeight: 700, padding: "4px 9px", background: "transparent", color: MUTED, border: "none", cursor: "pointer", whiteSpace: "nowrap" },
+  billOn: { background: BLUE_DEEP, color: "#fff" },
+  tierGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 2 },
+  tierCard: { border: `1px solid ${LINE}`, borderRadius: 2, background: PANEL2, padding: "10px 11px" },
+  tierOn: { borderColor: BLUE },
+  tierName: { fontFamily: ui, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: MUTED },
+  tierPrice: { fontFamily: mono, fontSize: 19, fontWeight: 700, color: TEXT, marginTop: 3, fontVariantNumeric: "tabular-nums" },
+  tierCalls: { fontSize: 11, fontWeight: 700, color: TEXT, margin: "7px 0 5px" },
+  upHead: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, paddingBottom: 8, marginBottom: 8, borderBottom: `1px solid ${LINE}` },
+  upFeature: { padding: "8px 10px", background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 2, marginBottom: 8 },
+
+  // auth modal furniture
+  orRow: { display: "flex", alignItems: "center", gap: 10, margin: "16px 0 0", fontSize: 9.5, color: MUTED, letterSpacing: "0.6px", textTransform: "uppercase", fontWeight: 700, whiteSpace: "nowrap" },
+  orLine: { flex: 1, height: 1, background: LINE },
+  provWrap: { display: "flex", gap: 30, justifyContent: "center", margin: "14px 0 2px" },
+  provBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 7, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: ui },
+  provCircle: { width: 44, height: 44, borderRadius: "50%", background: PANEL2, border: `1px solid ${RULE}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, fontWeight: 700, color: TEXT },
+
+  priBtn: { display: "inline-flex", alignItems: "center", gap: 7, background: BLUE_DEEP, color: "#fff", border: `1px solid ${BLUE_DEEP}`, borderRadius: 2, padding: "7px 13px", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: ui },
+  outBtn: { display: "inline-flex", alignItems: "center", gap: 7, background: "transparent", color: TEXT, border: `1px solid ${RULE}`, borderRadius: 2, padding: "7px 13px", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: ui },
+
+  filters: { display: "flex", alignItems: "center", gap: 12, padding: "8px 20px", borderBottom: `1px solid ${LINE}`, flexWrap: "wrap", background: PANEL },
+  fGroup: { display: "flex", flexDirection: "row", alignItems: "center", gap: 8 },
+  vrule: { width: 1, height: 24, background: RULE, flexShrink: 0 },
+  vruleSm: { width: 1, height: 15, background: RULE, flexShrink: 0, opacity: 0.7 },
+  fLabel: { fontFamily: mono, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.7px", color: MUTED, fontWeight: 700, whiteSpace: "nowrap" },
+  select: { fontFamily: ui, fontSize: 11.5, height: 28, padding: "0 9px", border: `1px solid ${RULE}`, borderRadius: 2, background: PANEL2, color: TEXT, minWidth: 150, boxSizing: "border-box" },
+
+  lockedRow: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "7px 20px", borderBottom: `1px solid ${LINE}`, background: PANEL },
+  lockedHead: { display: "inline-flex", alignItems: "center", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.7px", color: MUTED, fontWeight: 700, whiteSpace: "nowrap" },
+  lockedChips: { display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
+  lockedChip: { display: "inline-flex", alignItems: "center", height: 28, boxSizing: "border-box", padding: "0 10px", fontFamily: ui, fontSize: 10.5, border: `1px solid ${LINE}`, borderRadius: 2, background: "var(--chip-bg)", color: MUTED, cursor: "pointer", whiteSpace: "nowrap" },
+
+  countStrip: { display: "flex", gap: 12, alignItems: "center", padding: "8px 20px", fontSize: 11.5, color: TEXT, borderBottom: `1px solid ${LINE}`, flexWrap: "wrap", background: PANEL, fontVariantNumeric: "tabular-nums" },
+  check: { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11.5, color: TEXT, cursor: "pointer", userSelect: "none", fontWeight: 400 },
+  cbWrap: { position: "relative", width: 15, height: 15, flexShrink: 0, display: "inline-flex" },
+  cbInput: { position: "absolute", inset: 0, width: "100%", height: "100%", margin: 0, opacity: 0, cursor: "pointer" },
+  cbBox: { width: 15, height: 15, boxSizing: "border-box", border: `1px solid ${RULE}`, borderRadius: 2, background: PANEL2, display: "inline-flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" },
+  cbBoxOn: { background: RED, borderColor: RED },
+  hoodChip: { display: "inline-flex", alignItems: "center", height: 22, boxSizing: "border-box", padding: "0 8px", fontFamily: ui, fontSize: 10.5, border: `1px solid ${RULE}`, borderRadius: 2, background: PANEL2, color: TEXT, cursor: "pointer" },
+  leadMacro: { background: "none", border: "none", padding: 0, fontFamily: ui, fontSize: 11.5, fontWeight: 700, color: RED, cursor: "pointer", fontVariantNumeric: "tabular-nums" },
+  stat: { display: "inline-flex", alignItems: "baseline", gap: 7, whiteSpace: "nowrap" },
+  statK: { fontSize: 9, textTransform: "uppercase", letterSpacing: "0.8px", color: MUTED, fontWeight: 700 },
+  statV: { fontSize: 11.5, color: TEXT, fontWeight: 700, fontVariantNumeric: "tabular-nums", fontFamily: mono },
+  cacheTag: { display: "inline-flex", alignItems: "center", fontFamily: ui, fontSize: 9.5, letterSpacing: "0.6px", color: MUTED, fontWeight: 700, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", background: "none", border: "none", padding: 0, cursor: "pointer" },
+  cacheWrap: { marginLeft: "auto", position: "relative", display: "inline-flex", alignItems: "center", gap: 6 },
+  refreshBtn: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, background: "transparent", border: `1px solid ${LINE}`, borderRadius: 2, color: MUTED, cursor: "pointer", padding: 0, flexShrink: 0 },
+  proTag: { fontFamily: mono, fontSize: 8, fontWeight: 700, letterSpacing: "0.8px", padding: "1px 4px", marginLeft: 6, borderRadius: 2, background: "rgba(255,255,255,0.14)", color: "#fff" },
+  cachePop: { position: "absolute", top: "calc(100% + 6px)", right: 0, width: 264, maxWidth: "80vw", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, padding: "9px 11px", boxShadow: "0 14px 38px var(--shadow-strong)", fontFamily: ui, fontSize: 10.5, lineHeight: 1.5, letterSpacing: "normal", fontWeight: 400, textTransform: "none", fontVariantNumeric: "normal", color: MUTED, zIndex: 40, whiteSpace: "normal", textAlign: "left" },
+
+  bulkStrip: { display: "flex", gap: 12, alignItems: "center", padding: "6px 20px", fontSize: 11.5, borderBottom: `1px solid ${LINE}`, background: "var(--bulk-bg)" },
+
+  split: { display: "flex", alignItems: "stretch", minHeight: 0 },
+  main: { flex: 1, minWidth: 0 },
+  mapPanel: { display: "flex", flexDirection: "column", height: "100%", minHeight: 460, background: PANEL },
+  vuln: { fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.4px", color: AMBER, border: `1px solid ${RULE}`, background: PANEL2, borderRadius: 2, padding: "2px 6px", cursor: "help", whiteSpace: "nowrap" },
+  notifDot: { position: "absolute", top: 4, right: 5, width: 7, height: 7, borderRadius: 9, background: RED, border: `1.5px solid ${PANEL}` },
+  notifPop: { position: "absolute", top: "calc(100% + 6px)", right: 0, width: 320, maxWidth: "86vw", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 62, padding: 4, display: "block", maxHeight: 380, overflowY: "auto" },
+  notifHead: { display: "flex", justifyContent: "space-between", padding: "7px 8px", fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.7px", textTransform: "uppercase", color: MUTED, borderBottom: `1px solid ${LINE}` },
+  contest: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", padding: "11px 20px", background: PANEL2, borderBottom: `1px solid ${RULE}` },
+  contestTag: { fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "1px", color: "#fff", background: BLUE_DEEP, borderRadius: 2, padding: "3px 7px" },
+  contestCell: { fontFamily: mono, fontSize: 12, fontWeight: 700, color: TEXT, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 2, padding: "3px 6px", fontVariantNumeric: "tabular-nums", display: "inline-flex", alignItems: "baseline", gap: 1 },
+  cmpDrawer: { position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 47, background: PANEL, borderTop: `1px solid ${RULE}`, boxShadow: "0 -12px 34px var(--shadow-strong)", padding: "10px 14px 14px", maxHeight: "44vh", overflowY: "auto" },
+  cmpHead: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  cmpGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 },
+  cmpCard: { border: `1px solid ${LINE}`, borderRadius: 2, background: PANEL2, padding: "9px 11px" },
+  mapBar: { display: "flex", alignItems: "center", gap: 12, padding: "8px 12px", borderBottom: `1px solid ${LINE}`, flexWrap: "wrap" },
+  aside: { width: "30%", minWidth: 300, maxWidth: 440, borderLeft: `1px solid ${LINE}`, background: PANEL },
+  asideInner: { position: "sticky", top: 0, maxHeight: "100vh", overflowY: "auto", padding: "14px 16px 24px" },
+  paneHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12, paddingBottom: 10, borderBottom: `1px solid ${LINE}` },
+  paneTitle: { fontSize: 13, fontWeight: 700, color: TEXT, lineHeight: 1.3 },
+  paneClose: { position: "relative", width: 24, height: 24, background: "none", border: "none", color: MUTED, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  cancelBtn: { position: "absolute", top: 10, right: 12, background: "none", border: "none", fontFamily: ui, fontSize: 11, fontWeight: 600, color: MUTED, cursor: "pointer", padding: "2px 5px", lineHeight: 1 },
+  statEdit: { background: "none", border: "none", padding: 0, font: "inherit", color: TEXT, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", fontVariantNumeric: "tabular-nums" },
+  rowInput: { width: 76, background: PANEL2, border: `1px solid ${BLUE}`, borderRadius: 2, color: TEXT, fontFamily: mono, fontSize: 12, fontWeight: 700, padding: "2px 6px", fontVariantNumeric: "tabular-nums" },
+  paneBody: { fontSize: 12, color: MUTED, lineHeight: 1.55, margin: "0 0 14px" },
+  paneFoot: { fontSize: 10.5, color: MUTED, marginTop: 10, lineHeight: 1.6 },
+  paneLink: { background: "none", border: "none", padding: 0, marginTop: 12, fontFamily: ui, fontSize: 11, color: BLUE, cursor: "pointer", textAlign: "left" },
+  paneHint: { marginTop: 14, paddingTop: 10, borderTop: `1px solid ${LINE}`, fontSize: 10, color: FAINT },
+
+  kvGrid: { display: "grid", gridTemplateColumns: "92px 1fr", rowGap: 3, columnGap: 10, fontSize: 11.5, marginBottom: 10, lineHeight: 1.25 },
+  bizPage: { position: "fixed", inset: 0, zIndex: 68, background: BG, display: "flex", flexDirection: "column" },
+  bizBar: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 20px", borderBottom: `1px solid ${LINE}`, flexShrink: 0 },
+  bizScroll: { flex: 1, overflowY: "auto" },
+  bizInner: { maxWidth: 940, margin: "0 auto", padding: "24px 20px 60px", display: "flex", flexDirection: "column", gap: 16 },
+  bizSec: { border: `1px solid ${LINE}`, borderRadius: 2, background: PANEL, padding: "13px 15px" },
+  bizSecT: { fontSize: 9.5, letterSpacing: "0.7px", textTransform: "uppercase", color: MUTED, fontWeight: 700, marginBottom: 6 },
+  bizMetrics: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 },
+  bizCols: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" },
+  kvK: { fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.6px", color: MUTED, fontWeight: 700, paddingTop: 0 },
+  kvV: { color: TEXT, lineHeight: 1.25 },
+  kvLink: { background: "none", border: "none", padding: 0, margin: 0, fontFamily: ui, fontSize: 11.5, color: TEXT, cursor: "pointer", textAlign: "left", lineHeight: 1.25 },
+
+  mapBox: { border: `1px solid ${RULE}`, borderRadius: 2, overflow: "hidden", marginBottom: 6, background: PANEL2 },
+  mapFrame: { display: "block", width: "100%", height: 180, border: "none" },
+
+  notes: { width: "100%", fontFamily: ui, fontSize: 11.5, padding: "8px 10px", border: `1px solid ${RULE}`, borderRadius: 2, background: PANEL2, color: TEXT, boxSizing: "border-box", resize: "vertical", marginTop: 5, lineHeight: 1.5 },
+
+  planRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, color: TEXT, padding: "3px 0" },
+
+  table: { width: "100%", borderCollapse: "collapse", fontFamily: ui, fontSize: 11.5, fontVariantNumeric: "tabular-nums" },
+  th: { textAlign: "left", padding: "5px 12px", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.7px", color: MUTED, fontWeight: 700, borderBottom: `1.5px solid ${RULE}`, whiteSpace: "nowrap", userSelect: "none", position: "sticky", top: 0, background: BG, zIndex: 2 },
+  td: { padding: "4px 12px", borderBottom: `1px solid ${LINE}`, whiteSpace: "nowrap", verticalAlign: "middle" },
+
+  tagBtn: { background: "none", border: "none", padding: 0, marginLeft: 8, fontFamily: ui, fontSize: 10, color: MUTED, cursor: "pointer" },
+
+  status: { display: "inline-flex", alignItems: "center", fontSize: 11, whiteSpace: "nowrap", fontFamily: mono, fontVariantNumeric: "tabular-nums" },
+
+  phoneSpan: { display: "inline-block", padding: "1px 5px", margin: "-1px -5px", borderRadius: 2, cursor: "copy", fontFamily: mono, fontVariantNumeric: "tabular-nums" },
+
+  inFeedAd: { height: 44, border: `1px solid ${LINE}`, borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center", color: FAINT, fontSize: 9, letterSpacing: "1.5px", textTransform: "uppercase", background: PANEL },
+
+  endCap: { padding: "18px 20px 4px", borderTop: `1.5px solid ${RULE}` },
+  locPop: { position: "fixed", width: 280, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 60, padding: "12px 13px" },
+  adDockBtn: { background: "none", border: "none", color: FAINT, cursor: "pointer", fontFamily: mono, fontSize: 10, fontWeight: 700, letterSpacing: "0.5px", padding: "0 3px", lineHeight: 1, flexShrink: 0, whiteSpace: "nowrap" },
+  alertToast: { position: "fixed", top: 10, left: "50%", transform: "translate(-50%, 0)", width: 340, maxWidth: "94vw", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 69, overflow: "hidden", animation: "alertDrop 260ms ease-out" },
+  alertHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "6px 8px 6px 10px", borderBottom: `1px solid ${LINE}`, fontSize: 9, letterSpacing: "0.8px", textTransform: "uppercase", color: MUTED, fontWeight: 700 },
+
+  footer: { padding: "16px 20px 36px", fontSize: 10.5, color: MUTED, lineHeight: 1.6 },
+
+  overlay: { position: "fixed", inset: 0, background: "var(--scrim)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 },
+  adModal: { position: "relative", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, padding: "20px 20px 16px", width: 380, maxWidth: "100%", boxShadow: "0 16px 48px var(--shadow-strong)" },
+  fakeAd: { background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 2, padding: "30px 20px", textAlign: "center", marginTop: 8 },
+  edgeCompare: { display: "grid", gridTemplateColumns: "36px 1fr", rowGap: 5, columnGap: 9, border: `1px solid ${LINE}`, borderRadius: 2, background: PANEL2, padding: "9px 11px", margin: "0 0 14px", fontFamily: mono, fontSize: 10, lineHeight: 1.45 },
+
+  chipOn: { color: TEXT, borderColor: BLUE, background: SEL },
+  adminBtn: { position: "fixed", right: 10, bottom: 10, zIndex: 45, fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", padding: "5px 9px", background: PANEL, color: FAINT, border: `1px solid ${LINE}`, borderRadius: 2, cursor: "pointer" },
+  adminOn: { color: AMBER, borderColor: AMBER },
+
+  // first-visit tour (GMGN-style launch card: big visual, centered copy, dots)
+  tourCard: { position: "relative", width: 560, maxWidth: "94vw", height: 460, display: "flex", flexDirection: "column", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 16px 48px var(--shadow-strong)", overflow: "hidden", paddingBottom: 16 },
+  tourVis: { height: 210, flexShrink: 0, background: PANEL2, borderBottom: `1px solid ${LINE}`, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 20px" },
+  tourDots: { display: "flex", gap: 8, justifyContent: "center", margin: "16px 0 14px" },
+  tourDot: (on) => ({ width: 7, height: 7, borderRadius: "50%", background: on ? BLUE : RULE }),
+  tourFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "0 20px" },
+  input: { width: "100%", fontFamily: ui, fontSize: 12, padding: "9px 11px", border: `1px solid ${RULE}`, borderRadius: 2, background: PANEL2, color: TEXT, boxSizing: "border-box" },
+
+};
+
+const CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+  :root, html[data-theme="dark"] {
+    --bg:#15181d; --panel:#1d2128; --panel-2:#232833; --sel:#272f3d;
+    --line:#2c313c; --rule:#3e4554; --text:#d6dae2; --muted:#8a91a3; --faint:#586070;
+    --red:#d64b42; --amber:#d6a243; --green:#57a85f; --blue:#5b96d6; --blue-deep:#2c66a8;
+    --bulk-bg:#20283a; --row-msel:rgba(91,150,214,0.08); --scrim:rgba(8,10,13,0.62);
+    --shadow-strong:rgba(0,0,0,0.5); --border-hover:#4a5263; --btn-p-hover:#3372ba; --chip-bg:rgba(255,255,255,0.022);
+    color-scheme: dark;
+  }
+  html[data-theme="pitch"] {
+    --bg:#000000; --panel:#07080c; --panel-2:#0d0f16; --sel:#141a26;
+    --line:#14171f; --rule:#232936; --text:#d6dae2; --muted:#838a9c; --faint:#4d5566;
+    --red:#d64b42; --amber:#d6a243; --green:#57a85f; --blue:#5b96d6; --blue-deep:#2c66a8;
+    --bulk-bg:#0a0f1c; --row-msel:rgba(91,150,214,0.07); --scrim:rgba(0,0,0,0.8);
+    --shadow-strong:rgba(0,0,0,0.78); --border-hover:#2e3645; --btn-p-hover:#3372ba; --chip-bg:rgba(255,255,255,0.016);
+    color-scheme: dark;
+  }
+  html[data-theme="light"] {
+    --bg:#eef0f4; --panel:#ffffff; --panel-2:#e6e9ef; --sel:#d6e4f6;
+    --line:#e2e5eb; --rule:#c6ccd6; --text:#1a1d23; --muted:#606873; --faint:#9aa1ad;
+    --red:#c43d30; --amber:#9a6400; --green:#2a7d3a; --blue:#2f6fc0; --blue-deep:#2c66a8;
+    --bulk-bg:#e3edfb; --row-msel:rgba(47,111,192,0.10); --scrim:rgba(20,22,28,0.45);
+    --shadow-strong:rgba(15,23,42,0.18); --border-hover:#aeb5c2; --btn-p-hover:#255f9e; --chip-bg:rgba(15,23,42,0.03);
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: ${BG}; }
+  button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid ${BLUE}; outline-offset: 1px; }
+  .cbInput:focus-visible { outline: none; }
+  .cbInput:focus-visible + span { outline: 2px solid ${BLUE}; outline-offset: 1px; }
+  a.bizLink { color: ${BLUE}; text-decoration: none; font-weight: 700; font-size: 11.5px; }
+  a.bizLink:hover { text-decoration: underline; }
+  .btnP:hover { background: var(--btn-p-hover); border-color: var(--btn-p-hover); }
+  .btnO:hover:not(:disabled) { background: ${PANEL2}; }
+  .themeBtn:hover { color: ${TEXT}; border-color: var(--border-hover); }
+  .locBtn:hover { border-color: var(--border-hover); background: ${PANEL}; }
+  .adDockBtn:hover { color: ${TEXT}; }
+  .cancelBtn:hover { color: ${TEXT}; }
+  .statEdit:hover { text-decoration: underline; }
+  .searchInput:focus, input:focus { border-color: var(--blue-deep, ${BLUE}); }
+  .qItem:last-of-type { border-bottom: none; }
+  .blurLock { filter: blur(5px); user-select: none; pointer-events: none; }
+  .snapguard > *:not(.guardNote):not(.adminDock) { filter: blur(18px); pointer-events: none; user-select: none; }
+  .hdrLink:hover { color: ${TEXT}; }
+  .cityBtn:hover { border-color: ${MUTED}; color: ${TEXT}; }
+  .acctItem:hover { background: ${PANEL2}; }
+  .footLink:hover { color: ${TEXT}; text-decoration: underline; }
+  .sysBtn:hover { text-decoration: underline; }
+  .refreshBtn:hover { color: ${TEXT}; border-color: var(--border-hover); }
+  .refreshBtn.spin svg { animation: spin 700ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .provBtn:hover span:first-child { border-color: var(--border-hover); background: ${PANEL}; }
+  .lockedChip:hover { color: ${TEXT}; border-color: var(--border-hover); background: var(--panel-2); }
+  .adminBtn:hover { color: ${TEXT}; border-color: var(--border-hover); }
+  .hoodChip:hover { border-color: var(--border-hover); }
+  .cacheTag:hover { color: ${TEXT}; }
+  .cachePop { opacity: 0; visibility: hidden; transform: translateY(-3px); transition: opacity 90ms ease, transform 90ms ease, visibility 90ms; pointer-events: none; }
+  .cacheWrap:hover .cachePop, .cacheWrap:focus-within .cachePop { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
+  .kvLink:hover { text-decoration: underline; }
+  .paneLink:hover { text-decoration: underline; }
+  .tagBtn:hover { color: ${TEXT}; text-decoration: underline; }
+  .leadMacro:hover { text-decoration: underline; }
+  input::placeholder, textarea::placeholder { color: ${FAINT}; }
+  kbd { font-family: ${ui}; font-size: 9px; border: 1px solid ${RULE}; border-radius: 2; padding: 0 4px; background: ${PANEL2}; color: ${MUTED}; }
+
+  tbody tr.biz { animation: rowIn 140ms ease-out both; }
+  tbody tr.biz td { transition: background 60ms linear; cursor: default; }
+  tbody tr.biz:hover td { background: ${PANEL2}; }
+  tbody tr.biz.msel td { background: var(--row-msel); }
+  tbody tr.biz.sel td { background: ${SEL}; }
+  tbody tr.biz.sel td:first-child { box-shadow: inset 2px 0 0 ${BLUE}; }
+
+  @keyframes rowIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+  @keyframes alertDrop { from { transform: translate(-50%, -16px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+  .shake { animation: shakeX 380ms cubic-bezier(.36,.07,.19,.97); }
+  @keyframes shakeX {
+    10%, 90% { transform: translateX(-2px); }
+    20%, 80% { transform: translateX(4px); }
+    30%, 50%, 70% { transform: translateX(-7px); }
+    40%, 60% { transform: translateX(7px); }
+  }
+  @keyframes phoneFlash {
+    0% { box-shadow: inset 0 0 0 1px ${GREEN}; color: ${GREEN}; }
+    100% { box-shadow: inset 0 0 0 1px transparent; }
+  }
+  .phoneHit { animation: phoneFlash 0.85s ease-out; }
+  @keyframes kpulse {
+    0% { outline: 2px solid ${BLUE}; outline-offset: 2px; }
+    100% { outline: 2px solid transparent; outline-offset: 2px; }
+  }
+  .kpulse { animation: kpulse 1.1s ease-out; }
+
+  .tableWrap { overflow-x: auto; }
+  .tbl { min-width: 700px; }
+
+  @media (max-width: 900px) {
+    aside[aria-label="Detail pane"] {
+      position: fixed; top: 0; right: 0; bottom: 0; z-index: 40;
+      width: min(92vw, 380px); min-width: 0;
+      box-shadow: -16px 0 40px var(--shadow-strong);
+    }
+    .bizCols { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 860px) {
+    .gateRight { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    tbody tr.biz { animation: none; }
+    tbody tr.biz td { transition: none; }
+    .phoneHit, .kpulse { animation: none; }
+    .cachePop { transition: none; }
+  }
+`;
+

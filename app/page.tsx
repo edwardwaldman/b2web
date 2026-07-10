@@ -221,9 +221,6 @@ function Icon({ k, size = 12, fill = "none" }: { k: "play" | "x", size?: number,
   const p = {
     play: <path d="M8 5.5v13l11-6.5z" />,
     x: <path d="M6 6l12 12M18 6L6 18" />,
-  const p = {
-    play: <path d="M8 5.5v13l11-6.5z" />,
-    x: <path d="M6 6l12 12M18 6L6 18" />,
     target: <><circle cx="12" cy="12" r="6.5" /><path d="M12 2.5v3.5M12 18v3.5M2.5 12H6M18 12h3.5" /></>,
     refresh: <><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6" /><path d="M20.5 2.5v4.2h-4.2" /></>,
     copy: <><rect x="9" y="9" width="11" height="11" rx="1.6" /><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" /></>,

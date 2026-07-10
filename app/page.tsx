@@ -4,8 +4,6 @@
 
 import React, { useState, useEffect, useRef, useLayoutEffect, useMemo} from 'react';
 
-const planPrice = (pl: any, billing: any) => (billing === "yr" ? Math.round(pl.mo * 0.8) : pl.mo);
-
 // ... the rest of your B2Web code ...
 
 
@@ -123,7 +121,7 @@ const PLANS = [
   { id: "unlimited", name: "Unlimited", mo: 200, calls: "Unlimited calls",
     feats: ["Everything in Starter", "No result caps", "Armed alerts", "Priority crawl queue"] },
 ];
-const planPrice = (pl, billing) => (billing === "yr" ? Math.round(pl.mo * 0.8) : pl.mo);
+const planPrice = (pl: any, billing: any) => (billing === "yr" ? Math.round(pl.mo * 0.8) : pl.mo);
 
 // ── Mock SF cache slice ──────────────────────────────────────────────────────
 // Streets match their neighborhoods on purpose — the demo only convinces if an

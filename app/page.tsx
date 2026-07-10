@@ -217,7 +217,7 @@ const STATUS_META = {
 };
 
 // ── Tiny stroke icons (no dingbats, no emoji) ────────────────────────────────
-function Icon({ k, size = 12, fill = "none" }: { k: string, size?: number, fill?: string }) {
+function Icon({ k, size = 12, fill = "none" }: { k: "play" | "x", size?: number, fill?: string }) {
   const p = {
     play: <path d="M8 5.5v13l11-6.5z" />,
     x: <path d="M6 6l12 12M18 6L6 18" />,

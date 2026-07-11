@@ -1,4 +1,4 @@
-"use client"; // client
+"use client";
 
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react";
 
@@ -223,6 +223,7 @@ function Icon({ k, size = 12, fill = "none" }) {
     share: <><path d="M4 12.5v6A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-6" /><path d="M12 14.5V3.5M7.5 7.5 12 3l4.5 4.5" /></>,
     user: <><circle cx="12" cy="8" r="4" /><path d="M4 20a8 8 0 0 1 16 0" /></>,
     expand: <><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></>,
+    spinner: <><path d="M12 3a9 9 0 1 0 9 9" /></>,
     bell: <><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6" /><path d="M10.5 19.5a2 2 0 0 0 3 0" /></>,
     sun: <><path d="M7 17a5 5 0 0 1 10 0" /><path d="M3 17h18" /><path d="M12 3.5v2.2M6 8.4l1.5 1.5M18 8.4l-1.5 1.5M2.5 13.5h2.2M19.3 13.5h2.2" /></>,
     moon: <path d="M20.5 14.8A8.2 8.2 0 0 1 9.2 3.5a8.2 8.2 0 1 0 11.3 11.3z" />,
@@ -518,6 +519,9 @@ export default function Screener() {
   const [acctOpen, setAcctOpen] = useState(false); // manage-account modal
   const [acctOpen2, setAcctOpen2] = useState(false); // preferences modal
   const [logoutAsk, setLogoutAsk] = useState(false);
+  const [deleteAsk, setDeleteAsk] = useState(false); // delete-account confirm modal
+  const [deleteText, setDeleteText] = useState("");  // must type DELETE to confirm
+  const [busyAuth, setBusyAuth] = useState(null);    // null | "signup" | "login" | "delete"
   const cityRef = useRef(null);
   const [refReveal, setRefReveal] = useState(false); // "Referral code?" on signup
   const [resendLeft, setResendLeft] = useState(0);   // code resend cooldown
@@ -910,6 +914,21 @@ export default function Screener() {
   const REG_KEY = "b2w-users";
   const regList = () => { try { return JSON.parse(localStorage.getItem(REG_KEY) || "[]"); } catch { return []; } };
   const regAdd = (em) => { try { const l = regList(); if (!l.includes(em)) { l.push(em); localStorage.setItem(REG_KEY, JSON.stringify(l)); } } catch {} };
+  const regRemove = (em) => { try { localStorage.setItem(REG_KEY, JSON.stringify(regList().filter((x) => x !== em))); } catch {} };
+  const deleteAccount = () => {
+    if (busyAuth) return;
+    setBusyAuth("delete");
+    // Deleting the account, purging credits and lists, takes a moment.
+    setTimeout(() => {
+      regRemove(email.trim().toLowerCase());
+      setDeleteAsk(false); setDeleteText("");
+      setAcctOpen(false);
+      doLogOut();
+      setEmail("");
+      setBusyAuth(null);
+      flashGeo("Account deleted. You are back on the anonymous San Francisco cache.");
+    }, 1200);
+  };
   // NIST-style: length beats complexity. Accept >= 15 chars, or a passphrase
   // of 4+ words. No forced numbers/symbols/case.
   const strongPw = (pw) => pw.trim().length >= 15 || pw.trim().split(/\s+/).filter(Boolean).length >= 4;
@@ -932,17 +951,30 @@ export default function Screener() {
     rlClear("auth"); // a valid identifier+password pair resets the window
     setAuthLock(0);
     setAuthErr("");
-    setAuthStep("code");
-    setResendLeft(60);
+    // Sending the code takes a moment; the code step only appears once it
+    // would plausibly have landed in an inbox.
+    setBusyAuth("sending");
+    setTimeout(() => {
+      setBusyAuth(null);
+      setAuthStep("code");
+      setResendLeft(60);
+    }, 850);
   };
   const authConfirm = (su) => {
+    if (busyAuth) return;
     const wait = rlRetryIn("code");
     if (wait > 0) { setAuthLock(wait); setAuthErr(`Too many code attempts. Try again in ${rlFmt(wait)}.`); bump(); return; }
     if (authCode.trim().length < 6) { rlHit("code"); setAuthLock(rlRetryIn("code")); setAuthErr("Enter the 6-digit code from your email."); bump(); return; }
-    rlClear("code");
-    setAuthLock(0);
-    if (su) regAdd(email.trim().toLowerCase());
-    signIn("free");
+    // Verifying the code and provisioning the session takes a round trip.
+    setAuthErr("");
+    setBusyAuth(su ? "signup" : "login");
+    setTimeout(() => {
+      rlClear("code");
+      setAuthLock(0);
+      if (su) regAdd(email.trim().toLowerCase());
+      setBusyAuth(null);
+      signIn("free");
+    }, 1100);
   };
 
   const openAd = () => { setAdOpen(true); setAdLeft(5); };
@@ -2487,6 +2519,46 @@ export default function Screener() {
                 </button>
               </div>
             </div>
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${LINE}` }}>
+              <div style={{ ...S.fLabel, color: RED }}>Danger zone</div>
+              <div style={{ fontSize: 10.5, color: MUTED, margin: "4px 0 8px", lineHeight: 1.5 }}>
+                Permanently delete your account, credits, and saved lists. This cannot be undone.
+              </div>
+              <button className="btnO" style={{ ...S.outBtn, width: "100%", justifyContent: "center", color: RED, borderColor: RED }}
+                onClick={() => { setDeleteText(""); setDeleteAsk(true); }}>
+                Delete account
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Delete account confirmation: type DELETE to proceed ── */}
+      {deleteAsk && (
+        <div style={{ ...S.overlay, zIndex: 92 }} onClick={() => setDeleteAsk(false)} role="dialog" aria-modal="true">
+          <div style={{ ...S.adModal, width: 360 }} onClick={(e) => e.stopPropagation()}>
+            <button className="cancelBtn" style={S.cancelBtn} onClick={() => setDeleteAsk(false)} aria-label="Cancel">Cancel</button>
+            <div style={{ fontSize: 15, fontWeight: 700, color: RED, marginBottom: 6 }}>Delete your account?</div>
+            <div style={{ fontSize: 11, color: MUTED, marginBottom: 14, lineHeight: 1.55 }}>
+              This permanently removes your account, credits, referral history, and any saved
+              lists. Active subscriptions are not automatically canceled; cancel first on Stripe if
+              you have a paid plan. This cannot be undone.
+            </div>
+            <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 6 }}>
+              Type <strong style={{ color: TEXT, fontFamily: mono }}>DELETE</strong> to confirm.
+            </div>
+            <input style={{ ...S.input, fontFamily: mono, letterSpacing: "1px" }}
+              aria-label="Type DELETE to confirm" value={deleteText}
+              onChange={(e) => setDeleteText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && deleteText.trim().toUpperCase() === "DELETE") deleteAccount(); }} />
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button className="btnO" style={{ ...S.outBtn, flex: 1, justifyContent: "center" }} onClick={() => setDeleteAsk(false)} disabled={!!busyAuth}>Keep account</button>
+              <button className="btnP" style={{ ...S.priBtn, flex: 1, justifyContent: "center", ...(busyAuth === "delete" ? { background: RED, borderColor: RED, opacity: 0.8, cursor: "default" } : deleteText.trim().toUpperCase() !== "DELETE" ? { opacity: 0.5, cursor: "not-allowed" } : { background: RED, borderColor: RED }) }}
+                disabled={deleteText.trim().toUpperCase() !== "DELETE" || !!busyAuth}
+                onClick={deleteAccount}>
+                {busyAuth === "delete" ? (<><Spin /> Deleting</>) : "Delete account"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2527,9 +2599,9 @@ export default function Screener() {
                     inputMode="numeric" maxLength={6} placeholder="000000" aria-label="Verification code"
                     value={authCode} onChange={(e) => setAuthCode(e.target.value.replace(/[^0-9]/g, ""))} />
                   {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
-                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center" }}
-                    onClick={() => authConfirm(su)} disabled={authLock > 0}>
-                    {authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Confirm code"}
+                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center", ...(busyAuth ? { opacity: 0.75, cursor: "default" } : null) }}
+                    onClick={() => authConfirm(su)} disabled={authLock > 0 || !!busyAuth}>
+                    {busyAuth ? (<><Spin /> {su ? "Creating account" : "Signing in"}</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Confirm code"}
                   </button>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, gap: 10 }}>
                     <button className="paneLink" style={{ ...S.paneLink, marginTop: 0 }}
@@ -2565,9 +2637,9 @@ export default function Screener() {
                     </div>
                   )}
                   {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 8 }}>{authErr}</div>}
-                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 14, justifyContent: "center" }}
-                    onClick={() => authContinue(su, false)} disabled={authLock > 0}>
-                    {authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Continue"}
+                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 14, justifyContent: "center", ...(busyAuth === "sending" ? { opacity: 0.75, cursor: "default" } : null) }}
+                    onClick={() => authContinue(su, false)} disabled={authLock > 0 || !!busyAuth}>
+                    {busyAuth === "sending" ? (<><Spin /> Sending code</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Continue"}
                   </button>
                   {su && (
                     !refReveal ? (
@@ -2984,9 +3056,9 @@ export default function Screener() {
                     inputMode="numeric" maxLength={6} placeholder="000000" aria-label="Verification code"
                     value={authCode} onChange={(e) => setAuthCode(e.target.value.replace(/[^0-9]/g, ""))} />
                   {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
-                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center" }}
-                    onClick={() => authConfirm(gateMode === "signup")} disabled={authLock > 0}>
-                    {authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Confirm code"}
+                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center", ...(busyAuth ? { opacity: 0.75, cursor: "default" } : null) }}
+                    onClick={() => authConfirm(gateMode === "signup")} disabled={authLock > 0 || !!busyAuth}>
+                    {busyAuth ? (<><Spin /> {gateMode === "signup" ? "Creating account" : "Signing in"}</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Confirm code"}
                   </button>
                   <button className="paneLink" style={{ ...S.paneLink, marginTop: 10 }}
                     onClick={() => { setAuthStep("form"); setAuthErr(""); }}>
@@ -3047,9 +3119,9 @@ export default function Screener() {
                       <input type="password" placeholder="Password" style={{ ...S.input, marginTop: 8, ...(authErr && !authPw.trim() ? { borderColor: RED } : null) }}
                         aria-label="Password" value={authPw} onChange={(e) => setAuthPw(e.target.value)} />
                       {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
-                      <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 10, justifyContent: "center" }}
-                        onClick={() => authContinue(gateMode === "signup", true)} disabled={authLock > 0}>
-                        {authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Continue"}
+                      <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 10, justifyContent: "center", ...(busyAuth === "sending" ? { opacity: 0.75, cursor: "default" } : null) }}
+                        onClick={() => authContinue(gateMode === "signup", true)} disabled={authLock > 0 || !!busyAuth}>
+                        {busyAuth === "sending" ? (<><Spin /> Sending code</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Continue"}
                       </button>
                     </div>
                   )}
@@ -3436,6 +3508,15 @@ const vulnsOf = (d) => {
   if (k === "Instagram") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_BOOKING_FLOW"];
   return ["NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND"]; // Facebook indexes, but rents the domain
 };
+function Spin() {
+  return (
+    <svg className="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.4" strokeLinecap="round" style={{ verticalAlign: "-2px" }} aria-hidden="true">
+      <path d="M12 3a9 9 0 1 0 9 9" />
+    </svg>
+  );
+}
+
 function VulnFlags({ d }) {
   const v = vulnsOf(d);
   if (!v.length) return null;
@@ -3732,6 +3813,7 @@ const CSS = `
   .sysBtn:hover { text-decoration: underline; }
   .refreshBtn:hover { color: ${TEXT}; border-color: var(--border-hover); }
   .refreshBtn.spin svg { animation: spin 700ms linear infinite; }
+  svg.spin { animation: spin 700ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .skel { background: linear-gradient(90deg, var(--panel-2) 0%, var(--rule) 50%, var(--panel-2) 100%); background-size: 200% 100%; animation: shimmer 1.15s ease-in-out infinite; }
   .skelRow td { border-bottom: 1px solid var(--line); }

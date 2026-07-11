@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react";
 
 // ─────────────────────────────────────────────────────────────────────────────

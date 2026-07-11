@@ -1,11 +1,4 @@
-
-
-"use client";
-
-import React, { useState, useEffect, useRef, useLayoutEffect, useMemo} from 'react';
-
-// ... the rest of your B2Web code ...
-
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // b2website.list — SF screener (Step 1) · v3 "robust control panel"
@@ -121,7 +114,7 @@ const PLANS = [
   { id: "unlimited", name: "Unlimited", mo: 200, calls: "Unlimited calls",
     feats: ["Everything in Starter", "No result caps", "Armed alerts", "Priority crawl queue"] },
 ];
-const planPrice = (pl: any, billing: any) => (billing === "yr" ? Math.round(pl.mo * 0.8) : pl.mo);
+const planPrice = (pl, billing) => (billing === "yr" ? Math.round(pl.mo * 0.8) : pl.mo);
 
 // ── Mock SF cache slice ──────────────────────────────────────────────────────
 // Streets match their neighborhoods on purpose — the demo only convinces if an
@@ -217,7 +210,7 @@ const STATUS_META = {
 };
 
 // ── Tiny stroke icons (no dingbats, no emoji) ────────────────────────────────
-function Icon({ k, size = 12, fill = "none" }: { k: "play" | "x", size?: number, fill?: string }) {
+function Icon({ k, size = 12, fill = "none" }) {
   const p = {
     play: <path d="M8 5.5v13l11-6.5z" />,
     x: <path d="M6 6l12 12M18 6L6 18" />,
@@ -477,6 +470,14 @@ export default function Screener() {
   const [fresh, setFresh] = useState([]);            // rows injected by Refresh (newly listed)
   const [refreshing, setRefreshing] = useState(false);
   const freshCount = useRef(0);
+  const [viewed, setViewed] = useState(() => new Set()); // rows opened in detail
+  const markViewed = (name) => setViewed((v) => { if (v.has(name)) return v; const n = new Set(v); n.add(name); return n; });
+  const [picks, setPicks] = useState(() => new Set());   // far-left bulk checkboxes
+  // Data readiness: "loading" is a full cache fetch (page open / refresh);
+  // "indexing" is the shorter re-index after a filter or sort change.
+  const [busy, setBusy] = useState("loading");
+  const firstPaint = useRef(true);
+  const idxTimer = useRef(null);
   const [editRows, setEditRows] = useState(false);  // editing the Showing count inline
   const [rowDraft, setRowDraft] = useState("");
   const [adOpen, setAdOpen] = useState(false);
@@ -518,15 +519,22 @@ export default function Screener() {
   const cityRef = useRef(null);
   const [refReveal, setRefReveal] = useState(false); // "Referral code?" on signup
   const [resendLeft, setResendLeft] = useState(0);   // code resend cooldown
+  const [refreshLock, setRefreshLock] = useState(0); // seconds until refresh allowed
+  const [authLock, setAuthLock] = useState(0);       // seconds until auth allowed
   const [viewers, setViewers] = useState(212);       // live "current viewers"
   const [notifOpen, setNotifOpen] = useState(false);
   const notifRef = useRef(null);
   const [notifSeen, setNotifSeen] = useState(false);
   const [apiInfo, setApiInfo] = useState(false);
+  const [leaderOpen, setLeaderOpen] = useState(false);
+  const [exportMenu, setExportMenu] = useState(false);
+  const exportRef = useRef(null);
   const [tier, setTier] = useState("free");        // "free" | "starter" | "unlimited"
   const [gateMode, setGateMode] = useState("signup"); // wall gate mode
   const [gateEmail, setGateEmail] = useState(false);  // gate: email form revealed
   const [gateConsent, setGateConsent] = useState(true);
+  const [agreeTos, setAgreeTos] = useState(false);   // required: ToS + privacy
+  const [agreePromo, setAgreePromo] = useState(true); // optional: promo emails
   const searchInputRef = useRef(null);
   const [locCity, setLocCity] = useState("San Francisco, CA");
   const [locating, setLocating] = useState(false);
@@ -545,15 +553,13 @@ export default function Screener() {
   const [compareOn, setCompareOn] = useState(false);
   const [compare, setCompare] = useState(() => new Set()); // multi-select for Pro compare
   const [view, setView] = useState("grid"); // "grid" | "split" | "trending"
-  const canCompare = admin || tier !== "free";
-  const cmpActive = canCompare && compareOn;
-  const toggleCmp = (name) => setCompare((s0) => { const n = new Set(s0); n.has(name) ? n.delete(name) : n.add(name); return n; });
   const rootRef = useRef(null);
   const [cats, setCats] = useState(() => new Set()); // stacked categories
   const [radiusOn, setRadiusOn] = useState(false);
   const [radiusMi, setRadiusMi] = useState(3);
   const [rtOn, setRtOn] = useState(false);           // simulated live mode
   const [ultra, setUltra] = useState(false);         // ULTRA demo: hyper-live stats
+  const [simTier, setSimTier] = useState("unlimited"); // admin: which tier to preview
   const [adminAsk, setAdminAsk] = useState(false);   // admin password modal
   const [adminPw, setAdminPw] = useState("");
   const [adminErr, setAdminErr] = useState(false);
@@ -585,6 +591,17 @@ export default function Screener() {
   // in flips a local flag; the magic link and providers are unbuilt.
   const [email, setEmail] = useState("");
   const [authed, setAuthed] = useState(false);
+  // Effective tier the UI behaves as. Admin previews any tier via simTier; a
+  // signed-in user is their own tier; anonymous is free.
+  const effTier = admin ? simTier : (authed ? tier : "free");
+  const isPaid = effTier === "starter" || effTier === "unlimited";
+  const isUnlimited = effTier === "unlimited";
+  const showAds = !isUnlimited;      // unlimited is ad-free; free + starter see ads
+  const showLocks = !isPaid;         // padlocks only while on the free tier
+  const noWall = admin || authed;    // real signed-in users and admin never hit the wall
+  const canCompare = isPaid;
+  const cmpActive = canCompare && compareOn;
+  const toggleCmp = (name) => setCompare((s0) => { const n = new Set(s0); n.has(name) ? n.delete(name) : n.add(name); return n; });
   const [authModal, setAuthModal] = useState(null); // null | "signup" | "login"
   const [authPw, setAuthPw] = useState("");
   const [authPhone, setAuthPhone] = useState("");
@@ -675,7 +692,10 @@ export default function Screener() {
   const remaining = cacheTotal - rows.length;
   const freeCap = extra ? 40 : 20;
 
-  const selBiz = selected ? ALL_ROWS.find((d) => d.name === selected) : null;
+  // Resolve against the live pool first (it may hold generated or freshly
+  // refreshed rows that are not in the static ALL_ROWS), then fall back.
+  const findBiz = (name) => pool.find((d) => d.name === name) || ALL_ROWS.find((d) => d.name === name) || null;
+  const selBiz = selected ? findBiz(selected) : null;
 
   const toggleSort = (key) =>
     setSort((s) => (s.key === key
@@ -707,9 +727,10 @@ export default function Screener() {
     setSelected(d.name);
     setPane({ mode: "business" });
     setCopiedRev(false);
+    markViewed(d.name);
   };
   // Search opens the dedicated page, not the side pane.
-  const openBizPage = (d) => { setBizPage(d); setPane({ mode: null }); setCopiedRev(false); setCopiedPrompt(false); setPageAdMode("ad"); };
+  const openBizPage = (d) => { setBizPage(d); setPane({ mode: null }); setCopiedRev(false); setCopiedPrompt(false); setPageAdMode("ad"); markViewed(d.name); };
 
   const rowClick = (e, d) => {
     if (e.shiftKey) {
@@ -793,7 +814,12 @@ export default function Screener() {
   // and the sort flips to newest-first so they are visible immediately.
   const refreshCache = () => {
     if (refreshing) return;
+    const wait = rlRetryIn("refresh");
+    if (wait > 0) { setRefreshLock(wait); flashGeo(`Rate limited. ${RL.refresh.max} refreshes per minute. Try again in ${rlFmt(wait)}`); return; }
+    rlHit("refresh");
+    setRefreshLock(rlRetryIn("refresh"));
     setRefreshing(true);
+    setBusy("loading");
     setTimeout(() => {
       const batch = 2 + (freshCount.current % 3);
       const add = [];
@@ -802,6 +828,7 @@ export default function Screener() {
       setFresh((f) => [...add, ...f].slice(0, 40));
       setSort({ key: "listed", dir: "asc" });
       setRefreshing(false);
+      setBusy("idle");
     }, 650);
   };
 
@@ -871,7 +898,13 @@ export default function Screener() {
   // Registered-email store (prototype): signing up with a known email routes
   // to log in. Non-Gmail/Outlook emails also require a phone number.
   const bump = () => { setPwShake(true); setTimeout(() => setPwShake(false), 420); };
-  const resendCode = () => { if (resendLeft <= 0) setResendLeft(60); };
+  const resendCode = () => {
+    if (resendLeft > 0) return;
+    const wait = rlRetryIn("auth");
+    if (wait > 0) { setAuthLock(wait); setAuthErr(`Too many attempts. Try again in ${rlFmt(wait)}.`); return; }
+    rlHit("auth");
+    setResendLeft(60);
+  };
   const REG_KEY = "b2w-users";
   const regList = () => { try { return JSON.parse(localStorage.getItem(REG_KEY) || "[]"); } catch { return []; } };
   const regAdd = (em) => { try { const l = regList(); if (!l.includes(em)) { l.push(em); localStorage.setItem(REG_KEY, JSON.stringify(l)); } } catch {} };
@@ -883,20 +916,29 @@ export default function Screener() {
   // Step 1: identifier + password (+ phone when required). A matching pair
   // "sends" a 6-digit code to the email (mocked). Step 2 confirms it.
   const authContinue = (su, inGate) => {
+    const wait = rlRetryIn("auth");
+    if (wait > 0) { setAuthLock(wait); setAuthErr(`Too many attempts. Try again in ${rlFmt(wait)}.`); bump(); return; }
     const em = email.trim();
-    if (!em || !authPw.trim() || (needsPhone(em) && !authPhone.trim())) { setAuthErr("Must fill in required fields."); bump(); return; }
-    if (su && !strongPw(authPw)) { setAuthErr("Use at least 15 characters, or 4+ words as a passphrase."); bump(); return; }
+    if (!em || !authPw.trim() || (needsPhone(em) && !authPhone.trim())) { rlHit("auth"); setAuthLock(rlRetryIn("auth")); setAuthErr("Must fill in required fields."); bump(); return; }
+    if (su && !strongPw(authPw)) { rlHit("auth"); setAuthLock(rlRetryIn("auth")); setAuthErr("Use at least 15 characters, or 4+ words as a passphrase."); bump(); return; }
+    if (su && !inGate && !agreeTos) { setAuthErr("Please agree to the Terms of Service and Privacy Policy to continue."); bump(); return; }
     if (su && regList().includes(em.toLowerCase())) {
       if (inGate) setGateMode("login"); else setAuthModal("login");
       setAuthErr("That email already has an account. Log in instead.");
       return;
     }
+    rlClear("auth"); // a valid identifier+password pair resets the window
+    setAuthLock(0);
     setAuthErr("");
     setAuthStep("code");
     setResendLeft(60);
   };
   const authConfirm = (su) => {
-    if (authCode.trim().length < 6) { setAuthErr("Enter the 6-digit code from your email."); return; }
+    const wait = rlRetryIn("code");
+    if (wait > 0) { setAuthLock(wait); setAuthErr(`Too many code attempts. Try again in ${rlFmt(wait)}.`); bump(); return; }
+    if (authCode.trim().length < 6) { rlHit("code"); setAuthLock(rlRetryIn("code")); setAuthErr("Enter the 6-digit code from your email."); bump(); return; }
+    rlClear("code");
+    setAuthLock(0);
     if (su) regAdd(email.trim().toLowerCase());
     signIn("free");
   };
@@ -937,6 +979,40 @@ export default function Screener() {
     const t = setTimeout(() => setResendLeft((n) => n - 1), 1000);
     return () => clearTimeout(t);
   }, [resendLeft]);
+
+  // Rate-limit countdowns. Recomputed from the stored window each tick, so
+  // they stay honest across tab sleeps and reloads.
+  useEffect(() => {
+    if (refreshLock <= 0 && authLock <= 0) return;
+    const t = setInterval(() => {
+      setRefreshLock(rlRetryIn("refresh"));
+      setAuthLock(Math.max(rlRetryIn("auth"), rlRetryIn("code")));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [refreshLock, authLock]);
+
+  // Restore any lock still in force from a previous session
+  useEffect(() => {
+    setRefreshLock(rlRetryIn("refresh"));
+    setAuthLock(Math.max(rlRetryIn("auth"), rlRetryIn("code")));
+  }, []);
+
+  // Initial cache fetch when the page opens.
+  useEffect(() => {
+    const t = setTimeout(() => { setBusy("idle"); firstPaint.current = false; }, 820);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Re-index whenever the filter or sort inputs change (skip the first paint,
+  // which the load effect already covers). A short flash, long enough to read
+  // as work without getting in the way.
+  useEffect(() => {
+    if (firstPaint.current) return;
+    setBusy("indexing");
+    clearTimeout(idxTimer.current);
+    idxTimer.current = setTimeout(() => setBusy("idle"), 360);
+    return () => clearTimeout(idxTimer.current);
+  }, [cat, minRev, minStars, hood, onlyLeads, q, sort, multiCatOn]);
 
   // Screenshot deterrent. Best effort only: browsers cannot truly block OS
   // captures. PrintScreen and window focus loss blur everything; focus
@@ -1000,6 +1076,12 @@ export default function Screener() {
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [share]);
+  useEffect(() => {
+    if (!exportMenu) return;
+    const onDoc = (e) => { if (exportRef.current && !exportRef.current.contains(e.target)) setExportMenu(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [exportMenu]);
   useEffect(() => {
     if (!notifOpen) return;
     const onDoc = (e) => { if (notifRef.current && !notifRef.current.contains(e.target)) setNotifOpen(false); };
@@ -1232,8 +1314,8 @@ export default function Screener() {
             <Icon k={theme === "light" ? "sun" : "moon"} size={14} fill={theme === "pitch" ? "currentColor" : "none"} />
           </button>
           {(authed || admin) && (
-            <span style={S.tierChip} title="Current plan">
-              {admin ? "UNLIMITED" : tier.toUpperCase()}
+            <span style={S.tierChip} title={admin ? "Simulated plan (admin)" : "Current plan"}>
+              {effTier.toUpperCase()}{admin ? " (SIM)" : ""}
             </span>
           )}
           {authed ? (
@@ -1346,7 +1428,7 @@ export default function Screener() {
           <span style={S.fLabel}>View</span>
           <span style={S.billSeg} role="tablist" aria-label="Layout view">
             {[["grid", "Grid"], ["split", "Split"], ["trending", "Trending"]].map(([v, lab]) => {
-              const paid = admin || tier !== "free";
+              const paid = isPaid;
               const locked = v !== "grid" && !paid;
               return (
                 <button key={v} role="tab" aria-selected={view === v}
@@ -1367,7 +1449,7 @@ export default function Screener() {
               Compare{compare.size ? ` (${compare.size})` : ""}
             </button>
           )}
-          {(admin || tier !== "free") && (
+          {isPaid && (
             <button className="themeBtn" style={S.themeBtn} title="Full screen the screener"
               onClick={() => {
                 const el = rootRef.current;
@@ -1424,9 +1506,34 @@ export default function Screener() {
           )}
         </div>
 
-        <div style={S.sysRead} title="System status">
+        {isPaid && (
+          <span ref={exportRef} style={{ position: "relative", display: "inline-flex", marginLeft: "auto" }}>
+            <button className="billBtn" style={{ ...S.billBtn, border: `1px solid ${LINE}`, borderRadius: 2 }}
+              onClick={() => setExportMenu((v) => !v)} aria-haspopup="menu" aria-expanded={exportMenu}
+              title="Send the current view to a CSV or your CRM">
+              <Icon k="expand" size={11} /> Export{picks.size ? ` (${picks.size})` : ""}
+            </button>
+            {exportMenu && (
+              <span style={S.acctMenu} role="menu">
+                <button className="acctItem" style={S.acctItem} role="menuitem"
+                  onClick={() => { const list = picks.size ? rows.filter((d) => picks.has(d.name)) : rows; exportCSV(list); setExportMenu(false); }}>
+                  Export CSV{picks.size ? ` (${picks.size} selected)` : " (current view)"}
+                </button>
+                <button className="acctItem" style={S.acctItem} role="menuitem"
+                  onClick={() => { flashGeo("Webhook fired: " + (picks.size || rows.length) + " leads pushed to your endpoint"); setExportMenu(false); }}>
+                  Push to webhook
+                </button>
+                <button className="acctItem" style={S.acctItem} role="menuitem"
+                  onClick={() => { flashGeo("Copied " + (picks.size || rows.length) + " leads to clipboard"); setExportMenu(false); }}>
+                  Copy to clipboard
+                </button>
+              </span>
+            )}
+          </span>
+        )}
+        <div style={{ ...S.sysRead, marginLeft: isPaid ? 0 : "auto" }} title="System status">
           <span style={S.sysK}>Credits</span>
-          <span style={S.sysV}>{admin || tier === "unlimited" ? "Unlimited" : authed && tier === "starter" ? "40 / mo" : "0"}</span>
+          <span style={S.sysV}>{isUnlimited ? "Unlimited" : effTier === "starter" ? "40 / mo" : "0"}</span>
           <span style={S.vruleSm} />
           <span style={S.sysK}>API</span>
           <button className="sysBtn" style={{ ...S.sysV, color: GREEN, background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: mono }}
@@ -1498,7 +1605,7 @@ export default function Screener() {
               )}
             </span>
           </span>
-          No website only {!admin && <Lock />}
+          No website only {showLocks && <Lock />}
         </label>
 
         <span style={S.vrule} />
@@ -1546,20 +1653,31 @@ export default function Screener() {
         )}
 
         <span className="cacheWrap" style={S.cacheWrap}>
-          <button className={`refreshBtn${refreshing ? " spin" : ""}`} style={S.refreshBtn}
+          <button className={`refreshBtn${refreshing ? " spin" : ""}`}
+            style={{ ...S.refreshBtn, ...(admin && refreshLock > 0 ? { color: FAINT, cursor: "not-allowed" } : null) }}
+            disabled={admin && refreshLock > 0}
             onClick={(e) => {
               if (admin) { refreshCache(); return; }
               openUnlimited(e.currentTarget, { title: "Real-time data", body: FEATURES["Real-time data"] });
             }}
-            title="Refresh: pull newly listed businesses" aria-label="Refresh the cache">
+            title={admin && refreshLock > 0 ? `Rate limited. Try again in ${rlFmt(refreshLock)}` : "Refresh: pull newly listed businesses"}
+            aria-label="Refresh the cache">
             <Icon k="refresh" size={12} />
           </button>
+          {admin && refreshLock > 0 && (
+            <span style={{ fontFamily: mono, fontSize: 9.5, color: AMBER, whiteSpace: "nowrap" }}>{rlFmt(refreshLock)}</span>
+          )}
+          {busy !== "idle" && (
+            <span style={S.busyChip} aria-live="polite">
+              <span className="busyDot" /> {busy === "loading" ? "Loading cache" : "Indexing"}
+            </span>
+          )}
           <button className={`cacheTag`} style={{ ...S.cacheTag, ...(admin && (rtOn || fresh.length) ? { color: GREEN } : null) }} aria-describedby={admin ? undefined : "rt-pop"}
             onClick={(e) => {
               if (admin) { setRtOn(!rtOn); return; }
               openUnlimited(e.currentTarget, { title: "Real-time data", body: FEATURES["Real-time data"] });
             }}>
-            {admin && rtOn ? "SF live, real-time" : admin && fresh.length ? "SF cache, updated just now" : <>SF cache, updated 6d ago {!admin && <Lock />}</>}
+            {admin && rtOn ? "SF live, real-time" : admin && fresh.length ? "SF cache, updated just now" : <>SF cache, updated 6d ago {showLocks && <Lock />}</>}
           </button>
           {!admin && (
           <span id="rt-pop" className="cachePop" style={S.cachePop} role="tooltip">
@@ -1572,6 +1690,20 @@ export default function Screener() {
         </span>
       </div>
 
+      {/* Far-left checkbox batch bar */}
+      {isPaid && picks.size > 0 && (
+        <div style={S.bulkStrip}>
+          <span style={{ color: TEXT }}><strong>{picks.size}</strong> selected</span>
+          <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
+            onClick={() => exportCSV(rows.filter((d) => picks.has(d.name)))}>Export CSV</button>
+          <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
+            onClick={() => flashGeo("Added " + picks.size + " leads to a saved list")}>Add to list</button>
+          <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
+            onClick={() => flashGeo("Spent " + picks.size + " credits to enrich " + picks.size + " leads")}>Enrich ({picks.size})</button>
+          <button className="paneLink" style={{ ...S.paneLink, marginTop: 0 }} onClick={() => setPicks(new Set())}>Clear</button>
+        </div>
+      )}
+
       {/* Bulk-selection strip (shift+click) */}
       {multi.size > 0 && (
         <div style={S.bulkStrip}>
@@ -1581,7 +1713,7 @@ export default function Screener() {
               if (admin) { exportCSV(ALL_ROWS.filter((d) => multi.has(d.name))); return; }
               openUnlimited(e.currentTarget, { title: "Export CSV", body: FEATURES["Export CSV"] });
             }}>
-            Export selection {!admin && <Lock />}
+            Export selection {showLocks && <Lock />}
           </button>
           <button className="lockedChip" style={{ ...S.lockedChip, border: "none" }} onClick={() => setMulti(new Set())}>
             Clear
@@ -1590,12 +1722,13 @@ export default function Screener() {
       )}
 
       {/* ── Season contest banner: closed-deal leaderboard ── */}
-      {!admin && (
-        <div style={S.contest}>
+      {(
+        <div style={S.contest} onClick={() => { setUp(null); setLeaderOpen(true); }} role="button" tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUp(null); setLeaderOpen(true); } }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span style={S.contestTag}>B2WEB S1</span>
-            <span style={{ fontSize: 15, fontWeight: 700, color: TEXT }}>$5,000 Deal Race</span>
-            <span style={{ fontSize: 11, color: MUTED }}>Most websites sold from this cache wins. Report a close, climb the board.</span>
+            <span style={{ fontSize: 15, fontWeight: 700, color: TEXT }}>Deal Race S1</span>
+            <span style={{ fontSize: 11, color: MUTED }}>Sell the most websites from this cache and win a year of Pro. Report a close, climb the board.</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginLeft: "auto", flexWrap: "wrap" }}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -1605,7 +1738,7 @@ export default function Screener() {
               ))}
             </span>
             <button className="btnP" style={{ ...S.priBtn, padding: "6px 18px" }}
-              onClick={(e) => openUnlimited(e.currentTarget, { title: "Deal Race S1", body: "Paid plans get a verified seller profile, a spot on the public leaderboard, and the credits to work enough leads to win. Free accounts can watch the board." })}>
+              onClick={(e) => { e.stopPropagation(); setUp(null); setLeaderOpen(true); }}>
               Join now
             </button>
           </div>
@@ -1620,6 +1753,14 @@ export default function Screener() {
             <table style={S.table} className="tbl">
               <thead>
                 <tr>
+                  {isPaid && (
+                    <th scope="col" style={{ ...S.th, width: 30, textAlign: "center", padding: "0 4px" }}>
+                      <input type="checkbox" aria-label="Select all rows"
+                        checked={rows.length > 0 && rows.every((d) => picks.has(d.name))}
+                        onChange={(e) => { const all = e.target.checked; setPicks((pv) => { const n = new Set(pv); rows.forEach((d) => all ? n.add(d.name) : n.delete(d.name)); return n; }); }}
+                        style={{ accentColor: BLUE_DEEP, cursor: "pointer", verticalAlign: "middle" }} />
+                    </th>
+                  )}
                   <Th k="name" label="Business" sort={sort} onSort={toggleSort} style={{ width: "26%" }} />
                   <Th k="rev" label="Reviews" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 64 }} />
                   <Th k="rating" label="Stars" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 60 }} />
@@ -1631,25 +1772,34 @@ export default function Screener() {
                 </tr>
               </thead>
               <tbody>
-                {rows.length === 0 && (
+                {busy !== "idle" && <SkeletonRows n={Math.min(Math.max(rows.length || 12, 8), 16)} />}
+                {busy === "idle" && rows.length === 0 && (
                   <tr>
-                    <td colSpan={8} style={{ ...S.td, padding: "26px 14px", color: MUTED, whiteSpace: "normal" }}>
+                    <td colSpan={isPaid ? 9 : 8} style={{ ...S.td, padding: "26px 14px", color: MUTED, whiteSpace: "normal" }}>
                       No matches in your free slice of {freeCap}. Clear a filter, or pull more rows from the cache below.
                     </td>
                   </tr>
                 )}
-                {rows.map((d, i) => {
+                {busy === "idle" && rows.map((d, i) => {
                   const isSel = selected === d.name;
                   const isMulti = multi.has(d.name);
                   return (
                     <React.Fragment key={d.name + "|" + i}>
                       <tr
                         ref={(el) => { el ? rowRefs.current.set(d.name, el) : rowRefs.current.delete(d.name); }}
-                        className={`biz${isSel ? " sel" : ""}${isMulti ? " msel" : ""}`}
+                        className={`biz${isSel ? " sel" : ""}${isMulti ? " msel" : ""}${viewed.has(d.name) ? " seen" : ""}`}
                         style={{ animationDelay: `${Math.min(i * 8, 240)}ms` }}
                         onClick={(e) => rowClick(e, d)}
                         onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
                       >
+                        {isPaid && (
+                          <td style={{ ...S.td, textAlign: "center", padding: "0 4px" }} onClick={(e) => e.stopPropagation()}>
+                            <input type="checkbox" checked={picks.has(d.name)}
+                              onChange={() => setPicks((pv) => { const n = new Set(pv); n.has(d.name) ? n.delete(d.name) : n.add(d.name); return n; })}
+                              style={{ accentColor: BLUE_DEEP, cursor: "pointer", verticalAlign: "middle" }}
+                              aria-label={`Select ${d.name}`} />
+                          </td>
+                        )}
                         <td style={S.td}>
                           {cmpActive && (
                             <input type="checkbox" checked={compare.has(d.name)}
@@ -1698,9 +1848,9 @@ export default function Screener() {
                       {/* In-feed slot: the free tier cannot remove it. Cancel
                           (live after 5s) swaps the ad for an inline Go-unlimited
                           pitch; the pitch's Cancel swaps the ad back in. */}
-                      {!admin && i === 11 && rows.length > 14 && (
+                      {showAds && i === 11 && rows.length > 14 && (
                         <tr>
-                          <td colSpan={8} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
+                          <td colSpan={isPaid ? 9 : 8} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
                             {inFeedMode === "ad" ? (
                               <div style={{ ...S.inFeedAd, position: "relative" }}>
                                 advertisement
@@ -1725,9 +1875,9 @@ export default function Screener() {
                           </td>
                         </tr>
                       )}
-                      {!admin && i === 27 && rows.length > 30 && (
+                      {showAds && i === 27 && rows.length > 30 && (
                         <tr>
-                          <td colSpan={8} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
+                          <td colSpan={isPaid ? 9 : 8} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
                             {inFeed2 === "ad" ? (
                               <div style={{ ...S.inFeedAd, position: "relative" }}>
                                 advertisement
@@ -1841,7 +1991,7 @@ export default function Screener() {
           {/* End-cap under the table: the pitch, always on. The free slice is
               spent by design; the copy states the shared-snapshot mechanics and
               sells the real-time cache as the edge over competitors. */}
-          {!(admin || tier !== "free") && (
+          {!isPaid && (
           <div style={S.endCap}>
             <div style={{ fontSize: 12.5, color: TEXT, fontWeight: 700, marginBottom: 4 }}>
               No more businesses without a website?
@@ -1910,14 +2060,13 @@ export default function Screener() {
                     <div style={{ marginBottom: 8 }}>
                       <span style={{ ...S.status, fontSize: 11.5 }}>
                         <span style={{ color: selBiz.status === "site" ? MUTED : c, fontWeight: 700 }}>{label}</span>
-                        <span style={{ ...S.viewPill, marginLeft: "auto" }}>
+                        <span style={{ ...S.viewPill, marginLeft: 10 }}>
                           <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{watchers}</span>
                           <span style={{ color: MUTED }}>viewing</span>
-                          <span style={S.livePip} />
+                          <span style={S.dotPlain} />
                         </span>
                       </span>
                       <div style={{ fontSize: 10.5, color: MUTED, marginTop: 3, lineHeight: 1.35 }}>{tip}</div>
-                      <VulnFlags d={selBiz} />
                     </div>
 
                     <div style={S.kvGrid}>
@@ -2154,6 +2303,89 @@ export default function Screener() {
         </div>
       )}
 
+      {/* ── Deal Race leaderboard ── */}
+      {leaderOpen && (() => {
+        // Deterministic mock board. Difficulty multiplier rewards harder sells
+        // (low rating + no website). Points are weighted, volume breaks ties by
+        // cumulative rating deficit, so helping the worst-off businesses wins.
+        const board = [
+          { u: "NORTHBEAM_WEB", sold: 15, vel: 2.1, deficit: 41.2, pipe: 6 },
+          { u: "PIXELFORGE", sold: 15, vel: 3.4, deficit: 33.8, pipe: 4 },
+          { u: "RANKLAB_SEO", sold: 12, vel: 1.8, deficit: 38.0, pipe: 9 },
+          { u: "CASTRO_SITES", sold: 11, vel: 4.0, deficit: 22.5, pipe: 3 },
+          { u: "YOU", sold: 8, vel: 2.6, deficit: 19.4, pipe: 5, me: true },
+          { u: "SOMA_STUDIO", sold: 6, vel: 3.1, deficit: 14.1, pipe: 2 },
+        ].sort((a, b) => b.sold - a.sold || b.deficit - a.deficit);
+        const ticker = [
+          ["14:02", "NORTHBEAM_WEB", "PORTOLA HARDWARE", 1],
+          ["13:47", "RANKLAB_SEO", "SUNSET NAIL BAR", 1],
+          ["13:31", "PIXELFORGE", "MISSION CYCLERY", 2],
+          ["13:08", "CASTRO_SITES", "NOE VALLEY DENTAL", 1],
+          ["12:55", "YOU", "GEARY BARBER CO", 1],
+        ];
+        return (
+          <div style={S.overlay} onClick={() => setLeaderOpen(false)} role="dialog" aria-modal="true">
+            <div style={{ ...S.adModal, width: 640, maxWidth: "94vw" }} onClick={(e) => e.stopPropagation()}>
+              <button className="cancelBtn" style={S.cancelBtn} onClick={() => setLeaderOpen(false)} aria-label="Cancel">Cancel</button>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                <span style={S.contestTag}>B2WEB S1</span>
+                <span style={{ fontSize: 17, fontWeight: 700, color: TEXT }}>Deal Race</span>
+                <span style={{ fontSize: 11, color: MUTED }}>Grand prize: one year of Pro, free</span>
+              </div>
+              <div style={{ fontSize: 10.5, color: MUTED, margin: "6px 0 12px", lineHeight: 1.5 }}>
+                Report a close, submit the site you built, and we verify it automatically. Volume wins; ties break toward whoever helped the worst-off businesses.
+              </div>
+
+              <div style={S.tickerWrap} aria-label="Recent verified closes">
+                <div className="tickerRun" style={S.tickerRun}>
+                  {ticker.concat(ticker).map(([t, u, biz, pts], i) => (
+                    <span key={i} style={S.tickerItem}>
+                      <span style={{ color: FAINT }}>{t} PST</span>
+                      <span style={{ color: BLUE, fontWeight: 700 }}>{u}</span>
+                      <span style={{ color: MUTED }}>closed</span>
+                      <span style={{ color: TEXT, fontWeight: 700 }}>{biz}</span>
+                      <span style={{ color: GREEN, fontWeight: 700 }}>+{pts}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ ...S.lbGrid, marginTop: 12 }}>
+                <div style={{ ...S.lbRow, ...S.lbHead }}>
+                  <span>Rank</span><span>Seller</span><span style={{ textAlign: "right" }}>Sold</span>
+                  <span style={{ textAlign: "right" }}>Velocity</span><span style={{ textAlign: "right" }}>Pipeline</span>
+                </div>
+                {board.map((r, i) => (
+                  <div key={r.u} style={{ ...S.lbRow, ...(r.me ? S.lbMe : null) }}>
+                    <span style={{ fontWeight: 700, color: i < 3 ? RED : FAINT }}>#{i + 1}</span>
+                    <span style={{ fontWeight: 700, color: r.me ? BLUE : TEXT }}>{r.u}</span>
+                    <span style={{ textAlign: "right", fontWeight: 700 }}>{r.sold}</span>
+                    <span style={{ textAlign: "right", color: MUTED }}>{r.vel.toFixed(1)}d</span>
+                    <span style={{ textAlign: "right", color: MUTED }}>{r.pipe}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12 }}>
+                <div style={S.lbNote}>
+                  <div style={S.lbNoteT}>Difficulty yield</div>
+                  A 1.0 star no-website lead is a harder sell than a 4.5 star upgrade, so it pays more. Lower rating, higher yield.
+                </div>
+                <div style={S.lbNote}>
+                  <div style={S.lbNoteT}>Verification</div>
+                  Submit the new URL. We check the WHOIS creation date is after the Jun 5 snapshot and scan for your b2web-verify tag in the page head.
+                </div>
+              </div>
+
+              <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", marginTop: 14 }}
+                onClick={() => { setLeaderOpen(false); flashGeo("Report a close from any business page once you have built their site"); }}>
+                Report a close
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── API status detail ── */}
       {apiInfo && (
         <div style={S.overlay} onClick={() => setApiInfo(false)} role="dialog" aria-modal="true">
@@ -2294,8 +2526,8 @@ export default function Screener() {
                     value={authCode} onChange={(e) => setAuthCode(e.target.value.replace(/[^0-9]/g, ""))} />
                   {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
                   <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center" }}
-                    onClick={() => authConfirm(su)}>
-                    Confirm code
+                    onClick={() => authConfirm(su)} disabled={authLock > 0}>
+                    {authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Confirm code"}
                   </button>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, gap: 10 }}>
                     <button className="paneLink" style={{ ...S.paneLink, marginTop: 0 }}
@@ -2332,8 +2564,8 @@ export default function Screener() {
                   )}
                   {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 8 }}>{authErr}</div>}
                   <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 14, justifyContent: "center" }}
-                    onClick={() => authContinue(su, false)}>
-                    Continue
+                    onClick={() => authContinue(su, false)} disabled={authLock > 0}>
+                    {authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Continue"}
                   </button>
                   {su && (
                     !refReveal ? (
@@ -2362,11 +2594,33 @@ export default function Screener() {
                     We confirm every email {su ? "signup" : "login"} with a 6-digit code.
                   </div>
                   {su ? (
-                    <div style={{ fontSize: 10, color: FAINT, marginTop: 6, textAlign: "center", lineHeight: 1.6 }}>
-                      By signing up you agree to the{" "}
-                      <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10 }}>Terms of Service</button>
-                      {" "}and{" "}
-                      <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10 }}>Privacy Policy</button>.
+                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 9 }}>
+                      <label style={S.consentRow}>
+                        <span style={S.cbWrap}>
+                          <input type="checkbox" className="cbInput" checked={agreeTos}
+                            onChange={(e) => { setAgreeTos(e.target.checked); if (e.target.checked) setAuthErr(""); }}
+                            style={S.cbInput} aria-label="Agree to Terms of Service and Privacy Policy" />
+                          <span style={{ ...S.cbBox, ...(agreeTos ? { background: BLUE_DEEP, borderColor: BLUE_DEEP } : (authErr.includes("Terms") ? { borderColor: RED } : null)) }} aria-hidden="true">
+                            {agreeTos && (<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>)}
+                          </span>
+                        </span>
+                        <span>I agree to the{" "}
+                          <button type="button" className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10.5, display: "inline" }} onClick={(e) => { e.preventDefault(); setInfoPage("terms"); }}>Terms of Service</button>
+                          {" "}and{" "}
+                          <button type="button" className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10.5, display: "inline" }} onClick={(e) => { e.preventDefault(); setInfoPage("privacy"); }}>Privacy Policy</button>.
+                        </span>
+                      </label>
+                      <label style={S.consentRow}>
+                        <span style={S.cbWrap}>
+                          <input type="checkbox" className="cbInput" checked={agreePromo}
+                            onChange={(e) => setAgreePromo(e.target.checked)}
+                            style={S.cbInput} aria-label="Consent to promotional emails" />
+                          <span style={{ ...S.cbBox, ...(agreePromo ? { background: BLUE_DEEP, borderColor: BLUE_DEEP } : null) }} aria-hidden="true">
+                            {agreePromo && (<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>)}
+                          </span>
+                        </span>
+                        <span>I consent to receiving promotional emails and product updates. You can opt out any time.</span>
+                      </label>
                     </div>
                   ) : (
                     <div style={{ fontSize: 10, color: FAINT, marginTop: 6, textAlign: "center" }}>
@@ -2472,7 +2726,7 @@ export default function Screener() {
                     );
                   })()}
 
-                  {!admin && (<>
+                  {showAds && (<>
                   <div style={{ ...S.bizSecT, marginTop: 14 }}>Sponsored</div>
                   {pageAdMode === "ad" ? (
                     <div style={{ ...S.inFeedAd, position: "relative", height: 210 }}>
@@ -2606,7 +2860,7 @@ export default function Screener() {
 
       {/* ── About / Help pages (full view) ── */}
       {infoPage && (
-        <div style={S.bizPage} role="dialog" aria-modal="true" aria-label={infoPage === "about" ? "About b2web.site" : "Help"}>
+        <div style={S.bizPage} role="dialog" aria-modal="true" aria-label={infoPage === "about" ? "About b2web.site" : infoPage === "terms" ? "Terms of Service" : infoPage === "privacy" ? "Privacy Policy" : "Help"}>
           <div style={S.bizBar}>
             <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px" }} onClick={() => setInfoPage(null)}>Back to results</button>
             <span style={{ fontFamily: ui, fontSize: 14, fontWeight: 700 }}>
@@ -2614,7 +2868,7 @@ export default function Screener() {
             </span>
           </div>
           <div style={S.bizScroll}><div style={{ ...S.bizInner, maxWidth: 720 }}>
-            {infoPage === "about" ? (
+            {infoPage === "about" && (
               <>
                 <h1 style={S.infoH1}>About B2Web.site</h1>
                 <p style={S.infoP}>
@@ -2633,10 +2887,11 @@ export default function Screener() {
                 <div style={S.bizSec}>
                   <div style={S.bizSecT}>Follow b2website</div>
                   <a className="bizLink" style={{ display: "block", marginBottom: 6 }} href="https://instagram.com/b2website" target="_blank" rel="noreferrer">instagram.com/b2website</a>
-                  <a className="bizLink" style={{ display: "block" }} href="https://x.com/b2website" target="_blank" rel="noreferrer">x.com/b2website</a>
+                  <a className="bizLink" style={{ display: "block" }} href="https://x.com/b2webs" target="_blank" rel="noreferrer">x.com/b2webs</a>
                 </div>
               </>
-            ) : (
+            )}
+            {infoPage === "help" && (
               <>
                 <h1 style={S.infoH1}>How to use B2Web.site</h1>
                 <p style={S.infoP}>
@@ -2667,6 +2922,43 @@ export default function Screener() {
                 </p>
               </>
             )}
+            {infoPage === "terms" && (
+              <>
+                <h1 style={S.infoH1}>Terms of Service</h1>
+                <p style={S.infoP}>
+                  These terms are a plain-language summary for this prototype. B2Web.site provides
+                  business listing data on an as-is basis for lead research. You agree to use the data
+                  lawfully, to respect the privacy of the businesses and people it describes, and not to
+                  resell the raw cache or use it for spam, harassment, or any purpose prohibited by
+                  applicable law.
+                </p>
+                <p style={S.infoP}>
+                  Listings are compiled from public sources and periodic crawls and may be incomplete or
+                  out of date. We make no warranty that a business lacks a website at the moment you call
+                  it. Paid plans are billed through Stripe; you can cancel any time before a trial
+                  converts. We may suspend accounts that abuse the service or attempt to circumvent rate
+                  limits or access controls.
+                </p>
+              </>
+            )}
+            {infoPage === "privacy" && (
+              <>
+                <h1 style={S.infoH1}>Privacy Policy</h1>
+                <p style={S.infoP}>
+                  This is a plain-language summary for this prototype. We collect the email or phone
+                  number you sign up with, a hashed record that an account exists, and basic usage needed
+                  to run the product and enforce rate limits. If you check the promotional emails box at
+                  signup we may send you product updates; you can opt out at any time and it never affects
+                  your access.
+                </p>
+                <p style={S.infoP}>
+                  We do not sell your personal information. Business listing data shown in the screener is
+                  drawn from public sources and our own checks, not from your account. Payment details are
+                  handled by Stripe and never touch our servers. You can request deletion of your account
+                  data through the Contact link in the footer.
+                </p>
+              </>
+            )}
             <SiteFooter onHelp={() => setInfoPage("help")} />
           </div></div>
         </div>
@@ -2691,8 +2983,8 @@ export default function Screener() {
                     value={authCode} onChange={(e) => setAuthCode(e.target.value.replace(/[^0-9]/g, ""))} />
                   {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
                   <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center" }}
-                    onClick={() => authConfirm(gateMode === "signup")}>
-                    Confirm code
+                    onClick={() => authConfirm(gateMode === "signup")} disabled={authLock > 0}>
+                    {authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Confirm code"}
                   </button>
                   <button className="paneLink" style={{ ...S.paneLink, marginTop: 10 }}
                     onClick={() => { setAuthStep("form"); setAuthErr(""); }}>
@@ -2754,8 +3046,8 @@ export default function Screener() {
                         aria-label="Password" value={authPw} onChange={(e) => setAuthPw(e.target.value)} />
                       {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
                       <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 10, justifyContent: "center" }}
-                        onClick={() => authContinue(gateMode === "signup", true)}>
-                        Continue
+                        onClick={() => authContinue(gateMode === "signup", true)} disabled={authLock > 0}>
+                        {authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Continue"}
                       </button>
                     </div>
                   )}
@@ -2790,10 +3082,22 @@ export default function Screener() {
       {/* ── Admin QA switch (fixed, bottom-right) ── */}
       <div className="adminDock" style={{ position: "fixed", right: 12, bottom: admin ? 10 : 100, zIndex: 95, display: "flex", gap: 6 }}>
         {admin && (
+          <span style={S.simSeg} role="group" aria-label="Simulate tier">
+            <span style={{ fontFamily: mono, fontSize: 8, fontWeight: 700, letterSpacing: "0.6px", color: FAINT, padding: "0 6px", alignSelf: "center" }}>SIM</span>
+            {[["free", "Free"], ["starter", "Pro"], ["unlimited", "Ultra"]].map(([t, lab]) => (
+              <button key={t} className="simBtn" style={{ ...S.simBtn, ...(simTier === t ? S.simBtnOn : null) }}
+                onClick={() => setSimTier(t)} aria-pressed={simTier === t}
+                title={`Preview the app as a ${lab} user`}>
+                {lab}
+              </button>
+            ))}
+          </span>
+        )}
+        {admin && (
           <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(ultra ? { color: RED, borderColor: RED } : null) }}
             onClick={() => setUltra((u) => !u)} aria-pressed={ultra}
             title="ULTRA demo: hyper-live real-time cache with fast-moving statistics">
-            ULTRA{ultra ? ": ON" : ""}
+            LIVE{ultra ? ": ON" : ""}
           </button>
         )}
         <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(admin ? S.adminOn : null) }}
@@ -3058,6 +3362,61 @@ function TourOverlay({ step, onNext, onBack, onSkip, email, setEmail, onLogin, o
   );
 }
 
+// ── Rate limiting ───────────────────────────────────────────────────────────
+// Sliding-window counter per action, persisted to localStorage so a reload
+// does not hand out a fresh quota. Production enforces this server side too:
+// a client-side limiter only shapes honest traffic, it does not stop an
+// attacker. Timestamps outside the window are dropped on every read.
+const RL = {
+  refresh: { max: 5, windowMs: 60000, label: "refreshes" },
+  auth:    { max: 5, windowMs: 300000, label: "sign in attempts" },
+  code:    { max: 5, windowMs: 300000, label: "code attempts" },
+};
+const rlRead = (name) => {
+  try {
+    const raw = JSON.parse(localStorage.getItem("b2w-rl-" + name) || "[]");
+    const cut = Date.now() - RL[name].windowMs;
+    return raw.filter((t) => t > cut);
+  } catch { return []; }
+};
+const rlWrite = (name, arr) => { try { localStorage.setItem("b2w-rl-" + name, JSON.stringify(arr)); } catch {} };
+// Returns 0 when allowed, else the seconds until the oldest hit ages out.
+const rlRetryIn = (name) => {
+  const hits = rlRead(name);
+  if (hits.length < RL[name].max) return 0;
+  const oldest = Math.min(...hits);
+  return Math.max(1, Math.ceil((oldest + RL[name].windowMs - Date.now()) / 1000));
+};
+const rlHit = (name) => { const h = rlRead(name); h.push(Date.now()); rlWrite(name, h); };
+const rlClear = (name) => { try { localStorage.removeItem("b2w-rl-" + name); } catch {} };
+const rlFmt = (sec) => (sec >= 60 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `${sec}s`);
+
+// ── Loading skeleton ────────────────────────────────────────────────────────
+// Placeholder rows shown while the cache is being fetched or re-indexed. In
+// production these states are real: the first paint waits on the cache read,
+// and every filter change is an index lookup, not an in-memory array filter.
+function SkeletonRows({ n = 12 }) {
+  // Per-column bar widths (%) mimic the real content rhythm.
+  const cols = [[62, 34], [48], [40], [46], [70, 30], [58], [40], [72]];
+  return (
+    <>
+      {Array.from({ length: n }).map((_, r) => (
+        <tr key={r} className="skelRow" aria-hidden="true">
+          {cols.map((bars, c) => (
+            <td key={c} style={{ ...S.td, verticalAlign: "middle" }}>
+              <span style={{ display: "inline-flex", gap: 6, width: "100%" }}>
+                {bars.map((w, b) => (
+                  <span key={b} className="skel" style={{ width: w + "%", height: 9, borderRadius: 2 }} />
+                ))}
+              </span>
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  );
+}
+
 // ── Vulnerability flags ─────────────────────────────────────────────────────
 // For social-only leads, name exactly what the platform cannot do. This is the
 // technical ammo an agency uses the moment the owner picks up the phone.
@@ -3107,7 +3466,7 @@ function SiteFooter({ onHelp }) {
         <span style={{ color: FAINT }}> • </span>
         <a className="footLink" style={S.footLink} href="https://b2web.site/privacy" target="_blank" rel="noreferrer">Privacy</a>
         <span style={{ color: FAINT }}> • </span>
-        <a className="footLink" style={S.footLink} href="https://x.com/b2website" target="_blank" rel="noreferrer">Follow us on X</a>
+        <a className="footLink" style={S.footLink} href="https://x.com/b2webs" target="_blank" rel="noreferrer">Follow us on X</a>
         <span style={{ color: FAINT }}> • </span>
         <a className="footLink" style={S.footLink} href="https://b2web.site/privacy" target="_blank" rel="noreferrer">Do Not Sell My Personal Information</a>
       </div>
@@ -3136,6 +3495,7 @@ const S = {
   viewersDock: { position: "fixed", left: 12, bottom: 12, zIndex: 46, display: "inline-flex", alignItems: "center", gap: 7, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, padding: "6px 11px", fontFamily: ui, fontSize: 11, color: MUTED, boxShadow: "0 8px 24px var(--shadow-strong)" },
   viewPill: { display: "inline-flex", alignItems: "center", gap: 6, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, padding: "4px 9px", fontFamily: ui, fontSize: 10.5, color: MUTED },
   livePip: { width: 6, height: 6, borderRadius: 9, background: GREEN, boxShadow: `0 0 6px ${GREEN}` },
+  dotPlain: { width: 6, height: 6, borderRadius: 9, background: GREEN },
   searchInput: { width: "100%", boxSizing: "border-box", background: PANEL2, border: `1px solid ${RULE}`, borderRadius: "2px 0 0 2px", color: TEXT, fontFamily: ui, fontSize: 11.5, padding: "6px 10px 6px 29px", outline: "none" },
   searchIcon: { position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: MUTED, display: "inline-flex", pointerEvents: "none" },
   utcClock: { fontFamily: mono, fontSize: 10.5, color: TEXT, letterSpacing: "0.5px", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
@@ -3200,6 +3560,7 @@ const S = {
 
   countStrip: { display: "flex", gap: 12, alignItems: "center", padding: "8px 20px", fontSize: 11.5, color: TEXT, borderBottom: `1px solid ${LINE}`, flexWrap: "wrap", background: PANEL, fontVariantNumeric: "tabular-nums" },
   check: { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11.5, color: TEXT, cursor: "pointer", userSelect: "none", fontWeight: 400 },
+  consentRow: { display: "flex", alignItems: "flex-start", gap: 8, fontSize: 10.5, color: MUTED, lineHeight: 1.45, cursor: "pointer" },
   cbWrap: { position: "relative", width: 15, height: 15, flexShrink: 0, display: "inline-flex" },
   cbInput: { position: "absolute", inset: 0, width: "100%", height: "100%", margin: 0, opacity: 0, cursor: "pointer" },
   cbBox: { width: 15, height: 15, boxSizing: "border-box", border: `1px solid ${RULE}`, borderRadius: 2, background: PANEL2, display: "inline-flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" },
@@ -3220,6 +3581,19 @@ const S = {
   split: { display: "flex", alignItems: "stretch", minHeight: 0 },
   main: { flex: 1, minWidth: 0 },
   mapPanel: { display: "flex", flexDirection: "column", height: "100%", minHeight: 460, background: PANEL },
+  simSeg: { display: "inline-flex", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, overflow: "hidden", height: 26 },
+  simBtn: { background: "none", border: "none", padding: "0 9px", fontFamily: mono, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.4px", color: MUTED, cursor: "pointer" },
+  simBtnOn: { background: BLUE_DEEP, color: "#fff" },
+  tickerWrap: { overflow: "hidden", border: `1px solid ${LINE}`, borderRadius: 2, background: BG, padding: "6px 0" },
+  tickerRun: { display: "inline-flex", gap: 26, whiteSpace: "nowrap", fontFamily: mono, fontSize: 10.5 },
+  tickerItem: { display: "inline-flex", gap: 6, alignItems: "center" },
+  lbGrid: { border: `1px solid ${LINE}`, borderRadius: 2, overflow: "hidden" },
+  lbRow: { display: "grid", gridTemplateColumns: "50px 1fr 60px 74px 74px", gap: 8, padding: "7px 11px", fontFamily: mono, fontSize: 11, borderBottom: `1px solid ${LINE}`, alignItems: "center" },
+  lbHead: { background: PANEL2, color: MUTED, fontSize: 9, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 700 },
+  lbMe: { background: "rgba(91,150,214,0.10)" },
+  lbNote: { flex: "1 1 240px", fontSize: 10.5, color: MUTED, lineHeight: 1.5, border: `1px solid ${LINE}`, borderRadius: 2, padding: "9px 11px", background: PANEL2 },
+  lbNoteT: { fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: TEXT, marginBottom: 4 },
+  busyChip: { display: "inline-flex", alignItems: "center", gap: 6, fontFamily: mono, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", color: MUTED, whiteSpace: "nowrap" },
   vuln: { fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.4px", color: AMBER, border: `1px solid ${RULE}`, background: PANEL2, borderRadius: 2, padding: "2px 6px", cursor: "help", whiteSpace: "nowrap" },
   notifDot: { position: "absolute", top: 4, right: 5, width: 7, height: 7, borderRadius: 9, background: RED, border: `1.5px solid ${PANEL}` },
   notifPop: { position: "absolute", top: "calc(100% + 6px)", right: 0, width: 320, maxWidth: "86vw", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 62, padding: 4, display: "block", maxHeight: 380, overflowY: "auto" },
@@ -3254,7 +3628,7 @@ const S = {
   bizSecT: { fontSize: 9.5, letterSpacing: "0.7px", textTransform: "uppercase", color: MUTED, fontWeight: 700, marginBottom: 6 },
   bizMetrics: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 },
   bizCols: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" },
-  kvK: { fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.6px", color: MUTED, fontWeight: 700, paddingTop: 0 },
+  kvK: { fontFamily: mono, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.6px", color: MUTED, fontWeight: 700, paddingTop: 0 },
   kvV: { color: TEXT, lineHeight: 1.25 },
   kvLink: { background: "none", border: "none", padding: 0, margin: 0, fontFamily: ui, fontSize: 11.5, color: TEXT, cursor: "pointer", textAlign: "left", lineHeight: 1.25 },
 
@@ -3337,7 +3711,8 @@ const CSS = `
   .cbInput:focus-visible + span { outline: 2px solid ${BLUE}; outline-offset: 1px; }
   a.bizLink { color: ${BLUE}; text-decoration: none; font-weight: 700; font-size: 11.5px; }
   a.bizLink:hover { text-decoration: underline; }
-  .btnP:hover { background: var(--btn-p-hover); border-color: var(--btn-p-hover); }
+  .btnP:hover:not(:disabled) { background: var(--btn-p-hover); border-color: var(--btn-p-hover); }
+  .btnP:disabled, .refreshBtn:disabled { opacity: 0.55; cursor: not-allowed; }
   .btnO:hover:not(:disabled) { background: ${PANEL2}; }
   .themeBtn:hover { color: ${TEXT}; border-color: var(--border-hover); }
   .locBtn:hover { border-color: var(--border-hover); background: ${PANEL}; }
@@ -3356,6 +3731,19 @@ const CSS = `
   .refreshBtn:hover { color: ${TEXT}; border-color: var(--border-hover); }
   .refreshBtn.spin svg { animation: spin 700ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .skel { background: linear-gradient(90deg, var(--panel-2) 0%, var(--rule) 50%, var(--panel-2) 100%); background-size: 200% 100%; animation: shimmer 1.15s ease-in-out infinite; }
+  .skelRow td { border-bottom: 1px solid var(--line); }
+  tbody tr.biz.seen td { color: var(--muted); }
+  tbody tr.biz.seen td a.bizLink { color: var(--muted); }
+  tbody tr.biz.seen { background: color-mix(in srgb, var(--panel) 55%, transparent); }
+  .tickerRun { animation: ticker 26s linear infinite; }
+  @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  .contest { cursor: pointer; }
+  .contest:hover { background: var(--panel); }
+  .simBtn:hover { color: var(--text); }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .busyDot { width: 6px; height: 6px; border-radius: 9px; background: var(--amber); animation: busyPulse 0.9s ease-in-out infinite; }
+  @keyframes busyPulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
   .provBtn:hover span:first-child { border-color: var(--border-hover); background: ${PANEL}; }
   .lockedChip:hover { color: ${TEXT}; border-color: var(--border-hover); background: var(--panel-2); }
   .adminBtn:hover { color: ${TEXT}; border-color: var(--border-hover); }
@@ -3418,4 +3806,3 @@ const CSS = `
     .cachePop { transition: none; }
   }
 `;
-

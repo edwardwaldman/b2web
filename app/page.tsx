@@ -114,7 +114,7 @@ const PLANS = [
   { id: "starter", name: "Starter", mo: 20, calls: "40 calls / mo",
     feats: ["Real-time crawls", "No ads", "Power filters", "CSV export"] },
   { id: "unlimited", name: "Unlimited", mo: 200, calls: "Unlimited calls",
-    feats: ["Everything in Starter", "No result caps", "Armed alerts", "Priority crawl queue"] },
+    feats: ["Everything in Starter", "Search any US location", "No result caps", "Armed alerts", "Priority crawl queue"] },
 ];
 const planPrice = (pl, billing) => (billing === "yr" ? Math.round(pl.mo * 0.8) : pl.mo);
 
@@ -164,7 +164,7 @@ const EXTRA = [
 const ALL_ROWS = [...DATA, ...EXTRA];
 const CATS = ["All categories", ...Array.from(new Set(ALL_ROWS.map((d) => d.cat))).sort()];
 const REVIEW_STOPS = [0, 5, 10, 25, 50, 100];
-const STAR_STOPS = [0, 3, 3.5, 4, 4.5];
+const STAR_STOPS = [0, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
 
 // Believable cache totals per category {t: total rows, l: strictly no website}
 const TOTALS = {
@@ -198,9 +198,7 @@ const FEATURES = {
   "Radius / Draw area": "Draw your service area on a map and screen only inside it. Stop scrolling past leads you would never drive to.",
   "Multiple categories": "Stack every trade you serve into one view: plumbers, HVAC, electricians in a single pass.",
   "Exclude contacted": "Mark a lead as contacted once and it stays hidden in every future search. No double outreach, no spreadsheet cross-checking.",
-  "Alerts": "Get an email when a new no-website business appears in your categories and area.",
   "Compare businesses": "Open several businesses side by side and work them at once instead of one pane at a time.",
-  "Saved lists": "Group leads into named lists (Barbers, Follow-ups, Won) and jump back to them any time.",
   "Contact enrichment": "Pull owner names, emails, and socials on top of the phone so you can reach a person, not a front desk.",
   "Duplicate filter": "Collapse the same business listed twice across sources into one clean row.",
 };
@@ -225,6 +223,7 @@ function Icon({ k, size = 12, fill = "none" }) {
     expand: <><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></>,
     spinner: <><path d="M12 3a9 9 0 1 0 9 9" /></>,
     bell: <><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6" /><path d="M10.5 19.5a2 2 0 0 0 3 0" /></>,
+    bookmark: <><path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z" /></>,
     sun: <><path d="M7 17a5 5 0 0 1 10 0" /><path d="M3 17h18" /><path d="M12 3.5v2.2M6 8.4l1.5 1.5M18 8.4l-1.5 1.5M2.5 13.5h2.2M19.3 13.5h2.2" /></>,
     moon: <path d="M20.5 14.8A8.2 8.2 0 0 1 9.2 3.5a8.2 8.2 0 1 0 11.3 11.3z" />,
   }[k];
@@ -587,6 +586,19 @@ export default function Screener() {
   const [copiedRev, setCopiedRev] = useState(false);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [kPulse, setKPulse] = useState(false);
+  // Customizable single-key shortcuts, persisted. Non-remappable keys (arrows,
+  // Enter, Esc, /, Cmd/Ctrl K) stay fixed; these five are user-editable.
+  const KB_DEFAULT = { phone: "c", reviews: "r", web: "w", map: "m" };
+  const [keybinds, setKeybinds] = useState(() => {
+    try { return { ...KB_DEFAULT, ...JSON.parse(localStorage.getItem("b2w-keys") || "{}") }; } catch { return { ...KB_DEFAULT }; }
+  });
+  useEffect(() => { try { localStorage.setItem("b2w-keys", JSON.stringify(keybinds)); } catch {} }, [keybinds]);
+  const [rebinding, setRebinding] = useState(null); // which action is capturing a key
+  // Notification preferences (mock), persisted.
+  const [notifPrefs, setNotifPrefs] = useState(() => {
+    try { return { newLeads: true, priceDrops: false, weekly: true, product: true, ...JSON.parse(localStorage.getItem("b2w-notif") || "{}") }; } catch { return { newLeads: true, priceDrops: false, weekly: true, product: true }; }
+  });
+  useEffect(() => { try { localStorage.setItem("b2w-notif", JSON.stringify(notifPrefs)); } catch {} }, [notifPrefs]);
   const [theme, setTheme] = useState(() => {
     // OLED (pitch) is the first-visit default; a saved choice always wins.
     try { const v = localStorage.getItem("b2w-theme"); if (v === "light" || v === "dark" || v === "pitch") return v; } catch {}
@@ -762,6 +774,13 @@ export default function Screener() {
   // One popover for every upsell. It anchors under the clicked element
   // (clamped to the viewport); `feature` optionally carries a {title, body}
   // pitch that renders above the plan bullets.
+  // Open the pricing popover anchored near the top-right controls when a
+  // feature is gated but there is no specific element to anchor to.
+  const openUnlimitedAt = (feature = null) => {
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
+    setUpTier(null); setUpErr(false);
+    setUp({ x: Math.max(8, vw - 460), y: 60, feature });
+  };
   const openUnlimited = (el, feature = null) => {
     const r = el.getBoundingClientRect();
     const vw = window.innerWidth || 1200, vh = window.innerHeight || 800;
@@ -896,10 +915,17 @@ export default function Screener() {
     setAcctMenu(false);
     setAuthPw(""); setAuthCode(""); setAuthErr("");
     if (pendingCity) { setLocCity(pendingCity); setPendingCity(null); }
-    if (pendingLoc) { setPendingLoc(false); locate(); } // finish the detect flow
+    if (pendingLoc) { setPendingLoc(false); locate(); flashGeo("Cache is coming to your area. We are building a 40 mile radius around you and will notify you when it is ready."); } // finish the detect flow
     if (pendingPlan) { const pl = pendingPlan; setPendingPlan(null); setTier(pl); window.open("https://checkout.stripe.com", "_blank", "noopener"); }
   };
-  const doLogOut = () => { setAuthed(false); setTier("free"); setAcctMenu(false); setLocCity("San Francisco, CA"); setLogoutAsk(false); };
+  const doLogOut = () => {
+    if (busyAuth) return;
+    setBusyAuth("logout");
+    setTimeout(() => {
+      setAuthed(false); setTier("free"); setAcctMenu(false); setLocCity("San Francisco, CA");
+      setLogoutAsk(false); setBusyAuth(null);
+    }, 900);
+  };
 
   // Registered-email store (prototype): signing up with a known email routes
   // to log in. Non-Gmail/Outlook emails also require a phone number.
@@ -1159,6 +1185,22 @@ export default function Screener() {
   // ── Keyboard suite ──────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e) => {
+      // Capturing a new shortcut in Preferences takes priority over everything.
+      if (rebinding) {
+        const key = e.key.length === 1 ? e.key.toLowerCase() : null;
+        e.preventDefault();
+        if (key && /[a-z0-9]/.test(key)) {
+          setKeybinds((kb) => {
+            // If the key is already used by another action, swap them.
+            const clash = Object.keys(kb).find((a) => kb[a] === key && a !== rebinding);
+            const next = { ...kb, [rebinding]: key };
+            if (clash) next[clash] = kb[rebinding];
+            return next;
+          });
+        }
+        setRebinding(null);
+        return;
+      }
       const inField = e.target.closest && e.target.closest("input, textarea, select");
 
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -1224,18 +1266,17 @@ export default function Screener() {
       }
 
       const k = e.key.toLowerCase();
-      if (k === "c" && selBiz) { copyPhone(selBiz); return; }
-      if (k === "r" && selBiz) { copyReviews(selBiz); return; }
-      if ((k === "w" || k === "m") && selBiz) {
+      if (k === keybinds.phone && selBiz) { copyPhone(selBiz); return; }
+      if (k === keybinds.reviews && selBiz) { copyReviews(selBiz); return; }
+      if ((k === keybinds.web || k === keybinds.map) && selBiz) {
         // Browsers focus the new tab; true background tabs can't be forced from
         // JS. Selection persists, so the panel state is intact on return.
-        // W = web presence (site/social), M = map.
-        window.open(k === "w" ? webHref(selBiz) : mapHref(selBiz), "_blank", "noopener");
+        window.open(k === keybinds.web ? webHref(selBiz) : mapHref(selBiz), "_blank", "noopener");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [rows, selected, selBiz, pane.mode, multi, adOpen, up, tour, authModal, locPrompt, alertToast, bizPage, infoPage, wall, share, acctMenu, acctOpen, adminAsk]);
+  }, [rows, selected, selBiz, pane.mode, multi, adOpen, up, tour, authModal, locPrompt, alertToast, bizPage, infoPage, wall, share, acctMenu, acctOpen, adminAsk, keybinds, rebinding]);
 
   // ── Pane content (business detail only) ─────────────────────────────────────
   const paneTitle = pane.mode === "business" && selBiz ? selBiz.name : "";
@@ -1312,10 +1353,14 @@ export default function Screener() {
         </div>
         <div style={S.topMeta}>
           <span ref={notifRef} style={{ position: "relative", display: "inline-flex" }}>
-            <button className="themeBtn" style={S.themeBtn} aria-label="Notifications" title="New no-website listings you missed"
-              onClick={() => { setNotifOpen((v) => !v); setNotifSeen(true); }}>
+            <button className="themeBtn" style={S.themeBtn} aria-label="Notifications"
+              title={isPaid ? "New no-website listings you missed" : "Alerts are a paid feature"}
+              onClick={(e) => {
+                if (!isPaid) { openUnlimited(e.currentTarget, { title: "Alerts", body: "Get notified the moment a new no-website business appears in your categories and area. Alerts ship with the paid plans." }); return; }
+                setNotifOpen((v) => !v); setNotifSeen(true);
+              }}>
               <Icon k="bell" size={15} />
-              {!notifSeen && <span style={S.notifDot} aria-hidden="true" />}
+              {isPaid && !notifSeen && <span style={S.notifDot} aria-hidden="true" />}
             </button>
             {notifOpen && (
               <span style={S.notifPop} role="menu" aria-label="New listings">
@@ -1339,6 +1384,14 @@ export default function Screener() {
               </span>
             )}
           </span>
+          <button className="themeBtn" style={S.themeBtn} aria-label="Saved lists"
+            title={isPaid ? "Your saved lead lists" : "Saved lists are a paid feature"}
+            onClick={(e) => {
+              if (!isPaid) { openUnlimited(e.currentTarget, { title: "Saved lists", body: "Group leads into named lists (Barbers, Follow-ups, Won) and jump back to them any time. Saved lists ship with the paid plans." }); return; }
+              flashGeo("Saved lists: you have no lists yet. Select leads and choose Add to list.");
+            }}>
+            <Icon k="bookmark" size={15} />
+          </button>
           <button className="hdrLink" style={S.hdrLink} onClick={() => setInfoPage("about")}>About</button>
           <button className="hdrLink" style={S.hdrLink} onClick={() => setInfoPage("help")}>Help</button>
           <button className="themeBtn" style={S.themeBtn}
@@ -1347,11 +1400,19 @@ export default function Screener() {
             aria-label="Cycle theme: light, dark, pitch black">
             <Icon k={theme === "light" ? "sun" : "moon"} size={14} fill={theme === "pitch" ? "currentColor" : "none"} />
           </button>
-          {(authed || admin) && (
-            <span style={S.tierChip} title={admin ? "Simulated plan (admin)" : "Current plan"}>
-              {effTier.toUpperCase()}{admin ? " (SIM)" : ""}
-            </span>
-          )}
+          {admin ? (
+            <button className="tierChipBtn" style={S.tierChip}
+              title="Demo mode. Sign up to use a real account."
+              onClick={() => { setAuthErr(""); setAuthModal("signup"); }}>
+              DEMO
+            </button>
+          ) : authed ? (
+            <button className="tierChipBtn" style={S.tierChip}
+              title="Your current plan. Click to see upgrades."
+              onClick={() => openUnlimitedAt()}>
+              {effTier.toUpperCase()}
+            </button>
+          ) : null}
           {authed ? (
             <span ref={acctRef} style={{ position: "relative", display: "inline-flex" }}>
               <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px", maxWidth: 180, whiteSpace: "nowrap" }}
@@ -1512,7 +1573,6 @@ export default function Screener() {
                 setRadiusOn(!radiusOn);
               }],
               "Real-time data": [rtOn, () => setRtOn(!rtOn)],
-              "Alerts": [alertOn, () => setAlertOn(!alertOn)],
               "Compare businesses": [compareOn, () => { if (compareOn) setCompare(new Set()); setCompareOn(!compareOn); }],
             };
             const t = toggles[l];
@@ -1625,7 +1685,7 @@ export default function Screener() {
           <span style={S.cbWrap}>
             <input type="checkbox" className="cbInput" checked={onlyLeads}
               onChange={(e) => {
-                if (!admin) {
+                if (!isPaid) {
                   openUnlimited(e.target, { title: "No website only", body: "Strip everything that already has a site and work pure leads. This filter ships with the paid plans, alongside real-time data and no caps." });
                   return;
                 }
@@ -1842,8 +1902,9 @@ export default function Screener() {
                               style={{ marginRight: 8, verticalAlign: "middle", accentColor: BLUE_DEEP, cursor: "pointer" }}
                               aria-label={`Compare ${d.name}`} />
                           )}
-                          <a className="bizLink" href={mapHref(d)} target="_blank" rel="noreferrer"
-                            title="Open in Maps">{d.name}</a>
+                          <button className="bizLink" style={S.bizNameBtn}
+                            onClick={(e) => { e.stopPropagation(); selectRow(d); }}
+                            title="Show details">{d.name}</button>
                           <button className="tagBtn" style={S.tagBtn}
                             onClick={(e) => { e.stopPropagation(); setCat(d.cat); }}
                             title={`Filter category: ${d.cat}`}>
@@ -2451,8 +2512,10 @@ export default function Screener() {
             <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 6 }}>Log out?</div>
             <div style={{ fontSize: 11.5, color: MUTED, marginBottom: 16 }}>You'll drop back to the anonymous San Francisco cache.</div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button className="btnO" style={{ ...S.outBtn, flex: 1, justifyContent: "center" }} onClick={() => setLogoutAsk(false)}>Stay</button>
-              <button className="btnP" style={{ ...S.priBtn, flex: 1, justifyContent: "center" }} onClick={doLogOut}>Log out</button>
+              <button className="btnO" style={{ ...S.outBtn, flex: 1, justifyContent: "center" }} onClick={() => setLogoutAsk(false)} disabled={busyAuth === "logout"}>Stay</button>
+              <button className="btnP" style={{ ...S.priBtn, flex: 1, justifyContent: "center", ...(busyAuth === "logout" ? { opacity: 0.75, cursor: "default" } : null) }} onClick={doLogOut} disabled={busyAuth === "logout"}>
+                {busyAuth === "logout" ? (<><Spin /> Logging out</>) : "Log out"}
+              </button>
             </div>
           </div>
         </div>
@@ -2472,12 +2535,51 @@ export default function Screener() {
                   onClick={() => setTheme(k)}>{lab}</button>
               ))}
             </div>
-            <div style={{ ...S.fLabel, margin: "14px 0 6px" }}>Keybinds</div>
-            <div style={{ ...S.kvGrid, gridTemplateColumns: "116px 1fr", marginBottom: 0 }}>
-              {[["↑ / ↓", "Move rows"], ["Enter", "Lead notes"], ["C", "Copy phone"], ["R", "Copy reviews"],
-                ["W", "Web presence"], ["M", "Map"], ["/", "Search"], ["Esc", "Close"]].map(([k, v]) => (
-                <React.Fragment key={k}><span><kbd>{k}</kbd></span><span style={{ color: MUTED, fontSize: 11 }}>{v}</span></React.Fragment>
+            <div style={{ ...S.fLabel, margin: "16px 0 6px" }}>Manage notifications</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {[["newLeads", "New no-website leads in my area"], ["priceDrops", "Rating or review changes on saved leads"],
+                ["weekly", "Weekly lead digest"], ["product", "Product news and offers"]].map(([k, label]) => (
+                <label key={k} style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 11, color: TEXT, cursor: "pointer" }}>
+                  <span style={S.cbWrap}>
+                    <input type="checkbox" className="cbInput" checked={!!notifPrefs[k]}
+                      onChange={(e) => setNotifPrefs((n) => ({ ...n, [k]: e.target.checked }))}
+                      style={S.cbInput} aria-label={label} />
+                    <span style={{ ...S.cbBox, ...(notifPrefs[k] ? S.cbBoxOn : null) }} aria-hidden="true">
+                      {notifPrefs[k] && (<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>)}
+                    </span>
+                  </span>
+                  {label}
+                </label>
               ))}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "16px 0 6px" }}>
+              <span style={S.fLabel}>Keybinds</span>
+              <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10 }}
+                onClick={() => { setRebinding(null); setKeybinds({ ...KB_DEFAULT }); }}>Reset to defaults</button>
+            </div>
+            <div style={{ ...S.kvGrid, gridTemplateColumns: "1fr 64px", marginBottom: 0, rowGap: 5, alignItems: "center" }}>
+              {[["phone", "Copy phone"], ["reviews", "Copy reviews"], ["web", "Web presence"], ["map", "Open map"]].map(([act, label]) => (
+                <React.Fragment key={act}>
+                  <span style={{ color: MUTED, fontSize: 11 }}>{label}</span>
+                  <button className="kbBind" style={{ ...S.kbBind, ...(rebinding === act ? S.kbBindOn : null) }}
+                    onClick={() => setRebinding((r) => (r === act ? null : act))}
+                    title="Click, then press a key to rebind">
+                    {rebinding === act ? "press key" : (keybinds[act] || "").toUpperCase()}
+                  </button>
+                </React.Fragment>
+              ))}
+            </div>
+            <div style={{ ...S.kvGrid, gridTemplateColumns: "1fr 64px", marginTop: 6, rowGap: 4, alignItems: "center" }}>
+              {[["Move rows", "↑ ↓"], ["Lead notes", "Enter"], ["Search", "/"], ["Close", "Esc"]].map(([label, k]) => (
+                <React.Fragment key={label}>
+                  <span style={{ color: FAINT, fontSize: 10.5 }}>{label}</span>
+                  <span style={{ ...S.kbBind, color: FAINT, borderStyle: "dashed", cursor: "default" }}>{k}</span>
+                </React.Fragment>
+              ))}
+            </div>
+            <div style={{ fontSize: 9.5, color: FAINT, marginTop: 8, lineHeight: 1.5 }}>
+              Click a shortcut, then press any letter or number. Fixed keys cannot be changed.
             </div>
           </div>
         </div>
@@ -2492,7 +2594,7 @@ export default function Screener() {
             <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 14 }}>
               Current plan: <strong style={{ color: TEXT }}>{admin ? "Unlimited (admin)" : tier === "free" ? "Free" : tier === "starter" ? "Starter" : "Unlimited"}</strong>
             </div>
-            <div style={{ ...S.fLabel, marginBottom: 6 }}>Email</div>
+            <div style={{ ...S.fLabel, marginBottom: 6 }}>Email or phone number</div>
             <input style={S.input} aria-label="Account email" placeholder="email or phone number"
               value={email} onChange={(e) => setEmail(e.target.value)} />
             <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>New password</div>
@@ -2562,151 +2664,6 @@ export default function Screener() {
           </div>
         </div>
       )}
-
-      {/* ── Sign up / Log in modal: password, then an emailed 6-digit code ── */}
-      {authModal && (() => {
-        const su = authModal === "signup";
-        return (
-          <div style={S.overlay} onClick={() => { setAuthModal(null); setPendingCity(null); setPendingLoc(false); }} role="dialog" aria-modal="true">
-            <div style={{ ...S.adModal, width: 400 }} onClick={(e) => e.stopPropagation()}>
-              <button className="cancelBtn" style={S.cancelBtn} onClick={() => { setAuthModal(null); setPendingCity(null); setPendingLoc(false); }} aria-label="Cancel">
-                Cancel
-              </button>
-              <div style={{ fontSize: 16, fontWeight: 700, color: TEXT }}>{su ? "Sign up" : "Log in"}</div>
-              <div style={{ fontSize: 11.5, color: MUTED, margin: "5px 0 14px" }}>
-                {su ? "Already have an account? " : "New here? "}
-                <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 11.5 }}
-                  onClick={() => { setAuthErr(""); setAuthModal(su ? "login" : "signup"); }}>
-                  {su ? "Log in" : "Sign up"}
-                </button>
-              </div>
-              {su && pendingCity && (
-                <div style={{ ...S.upFeature, fontSize: 11, color: MUTED, lineHeight: 1.5 }}>
-                  A free account unlocks the cached list for <strong style={{ color: TEXT }}>{pendingCity}</strong>.
-                </div>
-              )}
-              {su && pendingLoc && !pendingCity && (
-                <div style={{ ...S.upFeature, fontSize: 11, color: MUTED, lineHeight: 1.5 }}>
-                  A free account unlocks location detection and your city's cached list. Detection runs right after you sign up.
-                </div>
-              )}
-              {authStep === "code" ? (
-                <>
-                  <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.55, marginBottom: 10 }}>
-                    We emailed a 6-digit code to <strong style={{ color: TEXT }}>{email.trim()}</strong>. Enter it to {su ? "finish signing up" : "log in"}.
-                  </div>
-                  <input style={{ ...S.input, fontFamily: mono, letterSpacing: "4px", textAlign: "center", ...(authErr ? { borderColor: RED } : null) }}
-                    inputMode="numeric" maxLength={6} placeholder="000000" aria-label="Verification code"
-                    value={authCode} onChange={(e) => setAuthCode(e.target.value.replace(/[^0-9]/g, ""))} />
-                  {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
-                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center", ...(busyAuth ? { opacity: 0.75, cursor: "default" } : null) }}
-                    onClick={() => authConfirm(su)} disabled={authLock > 0 || !!busyAuth}>
-                    {busyAuth ? (<><Spin /> {su ? "Creating account" : "Signing in"}</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Confirm code"}
-                  </button>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, gap: 10 }}>
-                    <button className="paneLink" style={{ ...S.paneLink, marginTop: 0 }}
-                      onClick={() => { setAuthStep("form"); setAuthErr(""); }}>
-                      Use a different email
-                    </button>
-                    <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, ...(resendLeft > 0 ? { color: FAINT, cursor: "default", textDecoration: "none" } : null) }}
-                      onClick={resendCode} disabled={resendLeft > 0}>
-                      {resendLeft > 0 ? `Resend code in ${resendLeft}s` : "Resend code"}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div style={{ ...S.fLabel, marginBottom: 6 }}>Email</div>
-                  <input placeholder="email or phone number" style={{ ...S.input, ...(authErr && !email.trim() ? { borderColor: RED } : null) }}
-                    aria-label="Email or phone number" value={email} onChange={(e) => setEmail(e.target.value)} />
-                  {needsPhone(email) && (
-                    <>
-                      <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>Phone number</div>
-                      <input placeholder="(415) 555-0100" inputMode="tel" style={{ ...S.input, ...(authErr && !authPhone.trim() ? { borderColor: RED } : null) }}
-                        aria-label="Phone number" value={authPhone} onChange={(e) => setAuthPhone(e.target.value)} />
-                      <div style={{ fontSize: 10, color: FAINT, marginTop: 4 }}>Required for emails outside Gmail and Outlook.</div>
-                    </>
-                  )}
-                  <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>Password</div>
-                  <input type="password" placeholder="••••••••" className={pwShake ? "shake" : ""}
-                    style={{ ...S.input, ...((authErr && !authPw.trim()) || (pwShake) ? { borderColor: RED } : null) }}
-                    aria-label="Password" value={authPw} onChange={(e) => setAuthPw(e.target.value)} />
-                  {su && (
-                    <div style={{ fontSize: 10, color: FAINT, marginTop: 4, lineHeight: 1.5 }}>
-                      At least 15 characters, or 4+ words as a passphrase. No numbers or symbols required.
-                    </div>
-                  )}
-                  {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 8 }}>{authErr}</div>}
-                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 14, justifyContent: "center", ...(busyAuth === "sending" ? { opacity: 0.75, cursor: "default" } : null) }}
-                    onClick={() => authContinue(su, false)} disabled={authLock > 0 || !!busyAuth}>
-                    {busyAuth === "sending" ? (<><Spin /> Sending code</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Continue"}
-                  </button>
-                  {su && (
-                    !refReveal ? (
-                      <button className="paneLink" style={{ ...S.paneLink, marginTop: 10 }} onClick={() => setRefReveal(true)}>
-                        Referral code?
-                      </button>
-                    ) : (
-                      <input placeholder="Referral code" style={{ ...S.input, marginTop: 10, fontFamily: mono, letterSpacing: "1px" }}
-                        aria-label="Referral code" value={authCode2} onChange={(e) => setAuthCode2(e.target.value.toUpperCase())} />
-                    )
-                  )}
-                  <div style={S.orRow}>
-                    <span style={S.orLine} />
-                    <span>OR {su ? "sign up" : "log in"} with</span>
-                    <span style={S.orLine} />
-                  </div>
-                  <div style={S.provWrap}>
-                    {[["G", "Google"], ["Lv", "Lovable"], ["B4", "Base44"]].map(([g, n]) => (
-                      <button key={n} className="provBtn" style={S.provBtn} onClick={() => signIn("free")} title={`${su ? "Sign up" : "Log in"} with ${n}`}>
-                        <span style={S.provCircle}>{g}</span>
-                        <span style={{ fontSize: 10.5, color: MUTED }}>{n}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ fontSize: 10.5, color: MUTED, marginTop: 14, textAlign: "center", lineHeight: 1.6 }}>
-                    We confirm every email {su ? "signup" : "login"} with a 6-digit code.
-                  </div>
-                  {su ? (
-                    <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 9 }}>
-                      <label style={S.consentRow}>
-                        <span style={S.cbWrap}>
-                          <input type="checkbox" className="cbInput" checked={agreeTos}
-                            onChange={(e) => { setAgreeTos(e.target.checked); if (e.target.checked) setAuthErr(""); }}
-                            style={S.cbInput} aria-label="Agree to Terms of Service and Privacy Policy" />
-                          <span style={{ ...S.cbBox, ...(agreeTos ? { background: BLUE_DEEP, borderColor: BLUE_DEEP } : (authErr.includes("Terms") ? { borderColor: RED } : null)) }} aria-hidden="true">
-                            {agreeTos && (<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>)}
-                          </span>
-                        </span>
-                        <span>I agree to the{" "}
-                          <button type="button" className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10.5, display: "inline" }} onClick={(e) => { e.preventDefault(); setInfoPage("terms"); }}>Terms of Service</button>
-                          {" "}and{" "}
-                          <button type="button" className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10.5, display: "inline" }} onClick={(e) => { e.preventDefault(); setInfoPage("privacy"); }}>Privacy Policy</button>.
-                        </span>
-                      </label>
-                      <label style={S.consentRow}>
-                        <span style={S.cbWrap}>
-                          <input type="checkbox" className="cbInput" checked={agreePromo}
-                            onChange={(e) => setAgreePromo(e.target.checked)}
-                            style={S.cbInput} aria-label="Consent to promotional emails" />
-                          <span style={{ ...S.cbBox, ...(agreePromo ? { background: BLUE_DEEP, borderColor: BLUE_DEEP } : null) }} aria-hidden="true">
-                            {agreePromo && (<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>)}
-                          </span>
-                        </span>
-                        <span>I consent to receiving promotional emails and product updates. You can opt out any time.</span>
-                      </label>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 10, color: FAINT, marginTop: 6, textAlign: "center" }}>
-                      Terms of Service | Privacy Policy
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        );
-      })()}
 
       {/* ── Business page (full view, from search) ── */}
       {bizPage && (() => {
@@ -2886,23 +2843,33 @@ export default function Screener() {
         );
       })()}
 
-      {/* ── "Detect my location" popover, anchored under Request your location ── */}
+      {/* ── Location popover: request caching for your area ── */}
       {locPrompt && (
-        <div ref={locPromptRef} style={{ ...S.locPop, left: locPrompt.x, top: locPrompt.y }} role="dialog" aria-label="Detect my location">
+        <div ref={locPromptRef} style={{ ...S.locPop, left: locPrompt.x, top: locPrompt.y }} role="dialog" aria-label="Request your location for caching">
           <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 10 }}>
-            Ask our servers to resolve your approximate city from your connection, then sort businesses nearest to you. Your browser is never prompted.
+            {admin
+              ? "Location is disabled in demo mode. Sign up to request caching for your own area."
+              : "Ask our servers to resolve your approximate city from your connection and queue a cache build for the businesses around you. Your browser is never prompted."}
           </div>
-          <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }}
+          <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", ...(admin ? { opacity: 0.55, cursor: "not-allowed" } : null) }}
+            disabled={admin}
             onClick={() => {
               setLocPrompt(null);
-              if (!authed && !admin) { setPendingLoc(true); setAuthModal("signup"); return; }
+              if (admin) return; // demo cannot request caching
+              if (!authed) { setPendingLoc(true); setAuthModal("signup"); return; }
               locate();
+              flashGeo("Cache is coming to your area. We are building a 40 mile radius around you and will notify you when it is ready.");
             }}>
-            <Icon k="target" size={12} /> {authed || admin ? "Request your location" : "Request your location"}
+            <Icon k="target" size={12} /> Request your location for caching
           </button>
           {!authed && !admin && (
             <div style={{ fontSize: 10, color: FAINT, marginTop: 8, lineHeight: 1.5 }}>
-              Only the San Francisco cache is public. Sign up free and we'll notify you the moment your city's cache is posted.
+              Only the San Francisco cache is public. Sign up free and we will notify you the moment your area's 40 mile cache is posted.
+            </div>
+          )}
+          {isUnlimited && (
+            <div style={{ fontSize: 10, color: GREEN, marginTop: 8, lineHeight: 1.5 }}>
+              Ultra: search any location in the US and pull a fresh cache on demand, no waiting.
             </div>
           )}
         </div>
@@ -2936,10 +2903,10 @@ export default function Screener() {
       {infoPage && (
         <div style={S.bizPage} role="dialog" aria-modal="true" aria-label={infoPage === "about" ? "About b2web.site" : infoPage === "terms" ? "Terms of Service" : infoPage === "privacy" ? "Privacy Policy" : "Help"}>
           <div style={S.bizBar}>
-            <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px" }} onClick={() => setInfoPage(null)}>Back to results</button>
-            <span style={{ fontFamily: ui, fontSize: 14, fontWeight: 700 }}>
+            <button style={S.brandBtn} onClick={() => setInfoPage(null)} title="Back to the screener">
               <span style={{ color: TEXT }}>B2Web</span><span style={{ color: RED, fontFamily: mono }}>.site</span>
-            </span>
+            </button>
+            <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px" }} onClick={() => setInfoPage(null)}>Back to results</button>
           </div>
           <div style={S.bizScroll}><div style={{ ...S.bizInner, maxWidth: 720 }}>
             {infoPage === "about" && (
@@ -2977,9 +2944,10 @@ export default function Screener() {
                 </p>
                 <div style={S.bizSec}>
                   <div style={S.bizSecT}>Keybinds</div>
+                  <div style={{ fontSize: 10.5, color: FAINT, marginBottom: 6 }}>The first four can be changed in Preferences.</div>
                   <div style={{ ...S.kvGrid, gridTemplateColumns: "120px 1fr", marginBottom: 0 }}>
-                    {[["↑ / ↓", "Move through rows"], ["Enter", "Focus lead notes"], ["C", "Copy the selected phone"],
-                      ["R", "Copy all reviews"], ["W", "Open web presence"], ["M", "Open the map"],
+                    {[["↑ / ↓", "Move through rows"], ["Enter", "Focus lead notes"], [keybinds.phone.toUpperCase(), "Copy the selected phone"],
+                      [keybinds.reviews.toUpperCase(), "Copy all reviews"], [keybinds.web.toUpperCase(), "Open web presence"], [keybinds.map.toUpperCase(), "Open the map"],
                       ["/", "Focus the search bar"], ["ArrowLeft", "Close the business page"],
                       ["Esc", "Close panels and popovers"], ["Cmd/Ctrl K", "Jump to Request your location"]].map(([k, v]) => (
                       <React.Fragment key={k}>
@@ -3038,120 +3006,173 @@ export default function Screener() {
         </div>
       )}
 
-      {/* ── 2-minute wall: full-page signup gate, cannot be dismissed ── */}
-      {wall && !authed && !admin && (
-        <div style={S.gate} role="dialog" aria-modal="true" aria-label="Create a free account">
+      {/* ── Full-page sign up / log in. Also the 2-minute wall (not dismissable). ── */}
+      {(wall || authModal) && !authed && !admin && (() => {
+        const isWall = wall && !authModal;
+        const su = isWall ? gateMode === "signup" : authModal === "signup";
+        const flip = () => {
+          const next = su ? "login" : "signup";
+          if (isWall) setGateMode(next); else setAuthModal(next);
+          setAuthStep("form"); setAuthErr("");
+        };
+        const close = () => { if (isWall) return; setAuthModal(null); setPendingCity(null); setPendingLoc(false); setAuthStep("form"); setAuthErr(""); };
+        return (
+        <div style={S.gate} role="dialog" aria-modal="true" aria-label={su ? "Create a free account" : "Log in"}>
+          {!isWall && (
+            <button className="cancelBtn" style={{ ...S.cancelBtn, top: 16, right: 20, zIndex: 2 }} onClick={close} aria-label="Cancel">Cancel</button>
+          )}
           <div style={S.gateLeft}>
-            <div style={{ fontFamily: ui, fontSize: 16, fontWeight: 700 }}>
+            <button style={{ ...S.brandBtn, fontSize: 16, alignSelf: "flex-start" }} onClick={close} title={isWall ? "b2web.site" : "Back to the screener"}>
               <span style={{ color: TEXT }}>B2Web</span><span style={{ color: RED, fontFamily: mono }}>.site</span>
-            </div>
-            <div style={{ maxWidth: 340, width: "100%", margin: "auto 0", alignSelf: "center" }}>
+            </button>
+            <div style={{ maxWidth: 360, width: "100%", margin: "auto 0", alignSelf: "center" }}>
               {authStep === "code" ? (
                 <>
-                  <h1 style={{ fontFamily: ui, fontSize: 24, fontWeight: 700, color: TEXT, margin: "0 0 14px" }}>Check your email</h1>
+                  <h1 style={{ fontFamily: ui, fontSize: 26, fontWeight: 700, color: TEXT, margin: "0 0 14px" }}>Check your email</h1>
                   <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.55, marginBottom: 10 }}>
-                    We emailed a 6-digit code to <strong style={{ color: TEXT }}>{email.trim()}</strong>.
+                    We emailed a 6-digit code to <strong style={{ color: TEXT }}>{email.trim()}</strong>. Enter it to {su ? "finish signing up" : "log in"}.
                   </div>
                   <input style={{ ...S.input, fontFamily: mono, letterSpacing: "4px", textAlign: "center", ...(authErr ? { borderColor: RED } : null) }}
                     inputMode="numeric" maxLength={6} placeholder="000000" aria-label="Verification code"
                     value={authCode} onChange={(e) => setAuthCode(e.target.value.replace(/[^0-9]/g, ""))} />
                   {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
                   <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center", ...(busyAuth ? { opacity: 0.75, cursor: "default" } : null) }}
-                    onClick={() => authConfirm(gateMode === "signup")} disabled={authLock > 0 || !!busyAuth}>
-                    {busyAuth ? (<><Spin /> {gateMode === "signup" ? "Creating account" : "Signing in"}</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Confirm code"}
+                    onClick={() => authConfirm(su)} disabled={authLock > 0 || !!busyAuth}>
+                    {busyAuth ? (<><Spin /> {su ? "Creating account" : "Signing in"}</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Confirm code"}
                   </button>
-                  <button className="paneLink" style={{ ...S.paneLink, marginTop: 10 }}
-                    onClick={() => { setAuthStep("form"); setAuthErr(""); }}>
-                    Use a different email
-                  </button>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, gap: 10 }}>
+                    <button className="paneLink" style={{ ...S.paneLink, marginTop: 0 }}
+                      onClick={() => { setAuthStep("form"); setAuthErr(""); }}>Use a different email</button>
+                    <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, ...(resendLeft > 0 ? { color: FAINT, cursor: "default", textDecoration: "none" } : null) }}
+                      onClick={resendCode} disabled={resendLeft > 0}>
+                      {resendLeft > 0 ? `Resend code in ${resendLeft}s` : "Resend code"}
+                    </button>
+                  </div>
                 </>
               ) : (
                 <>
-                  <h1 style={{ fontFamily: ui, fontSize: 24, fontWeight: 700, color: TEXT, margin: "0 0 18px" }}>
-                    {gateMode === "signup" ? "Create a free account" : "Log in to continue"}
+                  <h1 style={{ fontFamily: ui, fontSize: 26, fontWeight: 700, color: TEXT, margin: "0 0 18px" }}>
+                    {su ? "Create a free account" : "Log in to b2web.site"}
                   </h1>
                   <button className="btnO" style={{ ...S.outBtn, width: "100%", justifyContent: "center", background: PANEL2 }}
                     onClick={() => signIn("free")}>
-                    <span style={{ fontFamily: mono, fontWeight: 700 }}>G</span> {gateMode === "signup" ? "Sign up" : "Log in"} with Google
+                    <span style={{ fontFamily: mono, fontWeight: 700 }}>G</span> {su ? "Sign up" : "Log in"} with Google
                   </button>
-                  {gateMode === "signup" && (
-                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                      <button className="btnO" style={{ ...S.outBtn, flex: 1, justifyContent: "center", background: PANEL2 }} onClick={() => signIn("free")}>
-                        <span style={{ fontFamily: mono, fontWeight: 700 }}>Lv</span> Lovable
-                      </button>
-                      <button className="btnO" style={{ ...S.outBtn, flex: 1, justifyContent: "center", background: PANEL2 }} onClick={() => signIn("free")}>
-                        <span style={{ fontFamily: mono, fontWeight: 700 }}>B4</span> Base44
-                      </button>
-                    </div>
-                  )}
-                  {gateMode === "signup" && (
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10.5, color: MUTED, margin: "10px 0 0", cursor: "pointer" }}>
-                      <span style={S.cbWrap}>
-                        <input type="checkbox" className="cbInput" checked={gateConsent} onChange={(e) => setGateConsent(e.target.checked)}
-                          style={S.cbInput} aria-label="Receive product updates" />
-                        <span style={{ ...S.cbBox, ...(gateConsent ? { background: BLUE_DEEP, borderColor: BLUE_DEEP } : null) }} aria-hidden="true">
-                          {gateConsent && (
-                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>
-                          )}
-                        </span>
-                      </span>
-                      I agree to receive the latest product updates and special offers
-                    </label>
-                  )}
                   <div style={S.orRow}>
                     <span style={S.orLine} />
                     <span>Or continue with</span>
                     <span style={S.orLine} />
                   </div>
-                  {!gateEmail ? (
-                    <button className="btnO" style={{ ...S.outBtn, width: "100%", marginTop: 14, justifyContent: "center" }}
-                      onClick={() => setGateEmail(true)}>
-                      Email
-                    </button>
+                  <div style={{ ...S.fLabel, marginBottom: 6 }}>Email or phone number</div>
+                  <input placeholder="email or phone number" style={{ ...S.input, ...(authErr && !email.trim() ? { borderColor: RED } : null) }}
+                    aria-label="Email or phone number" value={email} onChange={(e) => setEmail(e.target.value)} />
+                  {needsPhone(email) && (
+                    <>
+                      <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>Phone number</div>
+                      <input placeholder="(415) 555-0100" inputMode="tel" style={{ ...S.input, ...(authErr && !authPhone.trim() ? { borderColor: RED } : null) }}
+                        aria-label="Phone number" value={authPhone} onChange={(e) => setAuthPhone(e.target.value)} />
+                      <div style={{ fontSize: 10, color: FAINT, marginTop: 4 }}>Required for emails outside Gmail and Outlook.</div>
+                    </>
+                  )}
+                  <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>Password</div>
+                  <input type="password" placeholder="••••••••" className={pwShake ? "shake" : ""}
+                    style={{ ...S.input, ...((authErr && !authPw.trim()) || pwShake ? { borderColor: RED } : null) }}
+                    aria-label="Password" value={authPw} onChange={(e) => setAuthPw(e.target.value)} />
+                  {su && (
+                    <div style={{ fontSize: 10, color: FAINT, marginTop: 4, lineHeight: 1.5 }}>
+                      At least 15 characters, or 4+ words as a passphrase. No numbers or symbols required.
+                    </div>
+                  )}
+                  {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 8 }}>{authErr}</div>}
+                  <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 14, justifyContent: "center", ...(busyAuth === "sending" ? { opacity: 0.75, cursor: "default" } : null) }}
+                    onClick={() => authContinue(su, false)} disabled={authLock > 0 || !!busyAuth}>
+                    {busyAuth === "sending" ? (<><Spin /> Sending code</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Continue"}
+                  </button>
+                  {su && (
+                    !refReveal ? (
+                      <button className="paneLink" style={{ ...S.paneLink, marginTop: 10 }} onClick={() => setRefReveal(true)}>Referral code?</button>
+                    ) : (
+                      <input placeholder="Referral code" style={{ ...S.input, marginTop: 10, fontFamily: mono, letterSpacing: "1px" }}
+                        aria-label="Referral code" value={authCode2} onChange={(e) => setAuthCode2(e.target.value.toUpperCase())} />
+                    )
+                  )}
+                  {su ? (
+                    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 9 }}>
+                      <label style={S.consentRow}>
+                        <span style={S.cbWrap}>
+                          <input type="checkbox" className="cbInput" checked={agreeTos}
+                            onChange={(e) => { setAgreeTos(e.target.checked); if (e.target.checked) setAuthErr(""); }}
+                            style={S.cbInput} aria-label="Agree to Terms of Service and Privacy Policy" />
+                          <span style={{ ...S.cbBox, ...(agreeTos ? { background: BLUE_DEEP, borderColor: BLUE_DEEP } : (authErr.includes("Terms") ? { borderColor: RED } : null)) }} aria-hidden="true">
+                            {agreeTos && (<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>)}
+                          </span>
+                        </span>
+                        <span>I agree to the{" "}
+                          <button type="button" className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10.5, display: "inline" }} onClick={(e) => { e.preventDefault(); setInfoPage("terms"); }}>Terms of Service</button>
+                          {" "}and{" "}
+                          <button type="button" className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 10.5, display: "inline" }} onClick={(e) => { e.preventDefault(); setInfoPage("privacy"); }}>Privacy Policy</button>.
+                        </span>
+                      </label>
+                      <label style={S.consentRow}>
+                        <span style={S.cbWrap}>
+                          <input type="checkbox" className="cbInput" checked={agreePromo}
+                            onChange={(e) => setAgreePromo(e.target.checked)}
+                            style={S.cbInput} aria-label="Consent to promotional emails" />
+                          <span style={{ ...S.cbBox, ...(agreePromo ? { background: BLUE_DEEP, borderColor: BLUE_DEEP } : null) }} aria-hidden="true">
+                            {agreePromo && (<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l4 4L19 7" /></svg>)}
+                          </span>
+                        </span>
+                        <span>I consent to receiving promotional emails and product updates. You can opt out any time.</span>
+                      </label>
+                    </div>
                   ) : (
-                    <div style={{ marginTop: 14 }}>
-                      <input placeholder="email or phone number" style={{ ...S.input, ...(authErr && !email.trim() ? { borderColor: RED } : null) }}
-                        aria-label="Email or phone number" value={email} onChange={(e) => setEmail(e.target.value)} />
-                      {needsPhone(email) && (
-                        <input placeholder="Phone number" inputMode="tel" style={{ ...S.input, marginTop: 8, ...(authErr && !authPhone.trim() ? { borderColor: RED } : null) }}
-                          aria-label="Phone number" value={authPhone} onChange={(e) => setAuthPhone(e.target.value)} />
-                      )}
-                      <input type="password" placeholder="Password" style={{ ...S.input, marginTop: 8, ...(authErr && !authPw.trim() ? { borderColor: RED } : null) }}
-                        aria-label="Password" value={authPw} onChange={(e) => setAuthPw(e.target.value)} />
-                      {authErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>{authErr}</div>}
-                      <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 10, justifyContent: "center", ...(busyAuth === "sending" ? { opacity: 0.75, cursor: "default" } : null) }}
-                        onClick={() => authContinue(gateMode === "signup", true)} disabled={authLock > 0 || !!busyAuth}>
-                        {busyAuth === "sending" ? (<><Spin /> Sending code</>) : authLock > 0 ? `Locked, ${rlFmt(authLock)}` : "Continue"}
-                      </button>
+                    <div style={{ fontSize: 10.5, color: MUTED, marginTop: 14, textAlign: "center", lineHeight: 1.6 }}>
+                      We confirm every login with a 6-digit code.
                     </div>
                   )}
                 </>
               )}
             </div>
             <div style={{ fontSize: 11.5, color: MUTED, alignSelf: "center" }}>
-              {gateMode === "signup" ? "Already have an account? " : "New here? "}
-              <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 11.5 }}
-                onClick={() => { setGateMode(gateMode === "signup" ? "login" : "signup"); setAuthStep("form"); setAuthErr(""); }}>
-                {gateMode === "signup" ? "Log in" : "Sign up"}
+              {su ? "Already have an account? " : "New here? "}
+              <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, fontSize: 11.5 }} onClick={flip}>
+                {su ? "Log in" : "Create a free account"}
               </button>
             </div>
           </div>
           <div className="gateRight" style={S.gateRight}>
-            <div style={{ maxWidth: 360, fontSize: 13, color: TEXT, lineHeight: 1.65 }}>
-              "b2web found me eleven no-website barbershops in one afternoon. Two signed for full builds within the week."
+            <div style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "1px", textTransform: "uppercase", color: MUTED, alignSelf: "flex-start" }}>
+              Live preview
             </div>
-            <div>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Dana R.</div>
-              <div style={{ fontSize: 10.5, color: MUTED }}>Freelance web designer</div>
+            <div style={S.snapWrap} aria-hidden="true">
+              <div style={S.snapBar}>
+                <span style={{ color: RED, fontWeight: 700 }}>b2web</span>
+                <span style={{ marginLeft: "auto", color: FAINT }}>San Francisco, CA</span>
+              </div>
+              <div style={S.snapHead}>
+                <span style={{ flex: 2 }}>Business</span><span style={{ flex: 1, textAlign: "right" }}>Reviews</span>
+                <span style={{ flex: 1, textAlign: "right" }}>Stars</span><span style={{ flex: 1.4, textAlign: "right" }}>Website</span>
+              </div>
+              {[["Castro Classic Cuts", 34, "3.4", "none"], ["Balboa Hot Pot", 214, "2.2", "third"],
+                ["Sunset Nails & Spa", 41, "3.5", "none"], ["Mission Cut House", 47, "4.6", "none"],
+                ["Outer Sunset Fades", 8, "3.5", "third"], ["Hayes Valley Hair Studio", 64, "4.4", "none"],
+                ["Clement Street Tailor", 16, "3.8", "none"], ["North Beach Locksmith", 87, "4.4", "third"],
+                ["Portola Hardware", 51, "3.1", "none"], ["Richmond Auto Care", 188, "4.3", "none"]].map((r, i) => (
+                <div key={i} style={{ ...S.snapRow, background: i % 2 ? "transparent" : "rgba(255,255,255,0.02)" }}>
+                  <span style={{ flex: 2, color: BLUE, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r[0]}</span>
+                  <span style={{ flex: 1, textAlign: "right", color: MUTED }}>{r[1]}</span>
+                  <span style={{ flex: 1, textAlign: "right", color: MUTED }}>{r[2]}&#9733;</span>
+                  <span style={{ flex: 1.4, textAlign: "right", color: r[3] === "none" ? RED : AMBER, fontWeight: 700 }}>{r[3] === "none" ? "No website" : "Social only"}</span>
+                </div>
+              ))}
             </div>
-            <div style={{ fontSize: 10.5, color: MUTED, marginTop: 10 }}>Trusted by web designers and agencies</div>
-            <div style={{ display: "flex", gap: 22, flexWrap: "wrap", justifyContent: "center", fontFamily: mono, fontSize: 11, fontWeight: 700, color: MUTED }}>
-              <span>PIXELFORGE</span><span>RankLab SEO</span><span>NorthBeam Web</span><span>CastroSites</span>
+            <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.55, maxWidth: 380 }}>
+              Every row is a San Francisco business with no real website, verified and cached. {su ? "Create an account" : "Log in"} to unlock your own city and work the leads.
             </div>
-            <div style={{ fontSize: 10, color: FAINT }}>and more...</div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Admin QA switch (fixed, bottom-right) ── */}
       <div className="adminDock" style={{ position: "fixed", right: 12, bottom: admin ? 10 : 100, zIndex: 95, display: "flex", gap: 6 }}>
@@ -3383,7 +3404,7 @@ function TourOverlay({ step, onNext, onBack, onSkip, email, setEmail, onLogin, o
             <div key={shake} className={shake ? "shake" : ""} style={{ maxWidth: 360, margin: "0 auto", width: "100%" }}>
               <div style={{ display: "flex", gap: 10 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ ...S.fLabel, marginBottom: 5 }}>Email</div>
+                  <div style={{ ...S.fLabel, marginBottom: 5 }}>Email or phone number</div>
                   <input style={{ ...S.input, ...(err && !email.trim() ? { borderColor: RED } : null) }}
                     placeholder="email or phone number" aria-label="Email or phone number"
                     value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -3570,6 +3591,7 @@ const S = {
   topbar: { position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 20px", borderBottom: `1px solid ${LINE}`, flexWrap: "wrap" },
   brandWrap: { display: "flex", alignItems: "center", gap: 14, minWidth: 0 },
   brandBtn: { fontFamily: ui, fontSize: 14, fontWeight: 700, letterSpacing: "-0.3px", whiteSpace: "nowrap", background: "none", border: "none", padding: 0, cursor: "pointer" },
+  bizNameBtn: { background: "none", border: "none", padding: 0, font: "inherit", cursor: "pointer", textAlign: "left" },
   topMeta: { display: "flex", alignItems: "center", gap: 10 },
   centerUnit: { position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%)", display: "flex", alignItems: "stretch", gap: 0, zIndex: 5, maxWidth: "52vw" },
   searchWrapInner: { position: "relative", width: "min(360px, 30vw)", minWidth: 150 },
@@ -3586,7 +3608,7 @@ const S = {
   guardNote: { position: "fixed", inset: 0, zIndex: 90, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" },
   guardBadge: { fontFamily: mono, fontSize: 10, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: TEXT, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 2, padding: "8px 14px", boxShadow: "0 14px 38px var(--shadow-strong)" },
   hdrLink: { background: "none", border: "none", padding: "2px 4px", fontFamily: ui, fontSize: 11, fontWeight: 600, color: MUTED, cursor: "pointer", whiteSpace: "nowrap" },
-  tierChip: { fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.8px", padding: "3px 7px", borderRadius: 2, border: `1px solid ${RULE}`, color: GREEN, whiteSpace: "nowrap" },
+  tierChip: { fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.8px", padding: "4px 8px", borderRadius: 2, border: `1px solid ${RULE}`, color: GREEN, whiteSpace: "nowrap", background: "none", cursor: "pointer" },
   acctMenu: { position: "absolute", top: "calc(100% + 6px)", right: 0, minWidth: 172, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 60, padding: 4, display: "block" },
   acctItem: { display: "block", width: "100%", textAlign: "left", background: "none", border: "none", borderRadius: 2, padding: "8px 10px", fontFamily: ui, fontSize: 11.5, color: TEXT, cursor: "pointer" },
   sysRead: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8, fontFamily: mono, whiteSpace: "nowrap" },
@@ -3599,7 +3621,11 @@ const S = {
   infoH1: { fontFamily: ui, fontSize: 24, fontWeight: 700, color: TEXT, margin: 0, lineHeight: 1.2 },
   infoP: { fontSize: 12.5, color: MUTED, lineHeight: 1.65, margin: 0 },
   gate: { position: "fixed", inset: 0, zIndex: 80, background: BG, display: "flex" },
-  gateLeft: { flex: "1 1 55%", minWidth: 0, display: "flex", flexDirection: "column", gap: 24, padding: "30px 48px 34px", overflowY: "auto" },
+  gateLeft: { flex: "1 1 50%", minWidth: 0, display: "flex", flexDirection: "column", gap: 24, padding: "30px 48px 34px", overflowY: "auto" },
+  snapWrap: { width: "100%", maxWidth: 460, border: `1px solid ${RULE}`, borderRadius: 3, overflow: "hidden", background: BG, fontFamily: mono, fontSize: 10.5, boxShadow: "0 14px 40px var(--shadow-strong)" },
+  snapBar: { display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderBottom: `1px solid ${LINE}`, fontSize: 10 },
+  snapHead: { display: "flex", gap: 8, padding: "6px 10px", borderBottom: `1px solid ${LINE}`, color: MUTED, fontSize: 8.5, textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 700 },
+  snapRow: { display: "flex", gap: 8, padding: "5px 10px", fontVariantNumeric: "tabular-nums" },
   gateRight: { flex: "1 1 45%", background: PANEL, borderLeft: `1px solid ${LINE}`, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", padding: "40px 48px", textAlign: "center", gap: 22 },
   searchDrop: { position: "absolute", top: "calc(100% + 5px)", left: 0, right: 0, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 55, overflow: "hidden" },
   qItem: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${LINE}`, padding: "7px 11px", cursor: "pointer", fontFamily: ui },
@@ -3664,6 +3690,8 @@ const S = {
   split: { display: "flex", alignItems: "stretch", minHeight: 0 },
   main: { flex: 1, minWidth: 0 },
   mapPanel: { display: "flex", flexDirection: "column", height: "100%", minHeight: 460, background: PANEL },
+  kbBind: { display: "inline-flex", alignItems: "center", justifyContent: "center", minWidth: 44, padding: "4px 8px", background: PANEL2, border: `1px solid ${RULE}`, borderRadius: 2, fontFamily: mono, fontSize: 11, fontWeight: 700, color: TEXT, cursor: "pointer", textTransform: "uppercase" },
+  kbBindOn: { borderColor: BLUE_DEEP, color: BLUE, background: "rgba(91,150,214,0.10)", textTransform: "none" },
   simSeg: { display: "inline-flex", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, overflow: "hidden", height: 26 },
   simBtn: { background: "none", border: "none", padding: "0 9px", fontFamily: mono, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.4px", color: MUTED, cursor: "pointer" },
   simBtnOn: { background: BLUE_DEEP, color: "#fff" },
@@ -3807,6 +3835,10 @@ const CSS = `
   .blurLock { filter: blur(5px); user-select: none; pointer-events: none; }
   .snapguard > *:not(.guardNote):not(.adminDock) { filter: blur(18px); pointer-events: none; user-select: none; }
   .hdrLink:hover { color: ${TEXT}; }
+  .tierChipBtn:hover { border-color: ${MUTED}; color: ${TEXT}; }
+  .kbBind:hover { border-color: ${MUTED}; }
+  button.bizLink { color: ${BLUE}; }
+  button.bizLink:hover { text-decoration: underline; }
   .cityBtn:hover { border-color: ${MUTED}; color: ${TEXT}; }
   .acctItem:hover { background: ${PANEL2}; }
   .footLink:hover { color: ${TEXT}; text-decoration: underline; }

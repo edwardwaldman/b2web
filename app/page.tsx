@@ -3,6 +3,9 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useLayoutEffect, useMemo} from 'react';
+
+const planPrice = (pl: any, billing: any) => (billing === yr ? Math.round(pl.mo * 0.8) : pl.mo);
+
 // ... the rest of your B2Web code ...
 
 

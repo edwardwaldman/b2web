@@ -1,5 +1,20 @@
 'use client';
 
+// app/login/page.tsx — app.b2web.site/login
+// ─────────────────────────────────────────────────────────────────────────────
+// The b2web.site auth gate, lifted 1:1 from screener v11 and wired to real
+// Supabase email/password auth. Markup, classes, inline styles, palette, and
+// the live-preview table are unchanged. What is new:
+//   · useState bindings on the email + password inputs
+//   · Continue → supabase.auth.signInWithPassword() (login mode)
+//              → supabase.auth.signUp()             (signup mode)
+//   · "Create a free account" / "Log in" flips the mode in place
+//   · a subtle bordered message strip under Continue for Supabase
+//     errors and successes (uses the existing --red / --green vars)
+//   · real async spinners: 650ms floor so the Spin never just flickers
+// Assumes the Supabase client is exported as `supabase` from @/utils/supabase.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/utils/supabase';
@@ -237,6 +252,8 @@ export default function LoginPage() {
             {busy === 'auth' ? (<><Spin /> {su ? 'Creating account' : 'Signing in'}</>) : 'Continue'}
           </button>
 
+          {/* Supabase error / success strip. Same type scale as the old inline
+              error, boxed with the semantic red/green so it stays subtle. */}
           {msg && (
             <div role={msg.kind === 'error' ? 'alert' : 'status'}
               style={{
@@ -262,7 +279,7 @@ export default function LoginPage() {
             )
           )}
 
-          {su ? (
+          {su && (
             <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 9 }}>
               <label style={S.consentRow}>
                 <span style={S.cbWrap}>
@@ -290,10 +307,6 @@ export default function LoginPage() {
                 </span>
                 <span>I consent to receiving promotional emails and product updates. You can opt out any time.</span>
               </label>
-            </div>
-          ) : (
-            <div style={{ fontSize: 10.5, color: MUTED, marginTop: 14, textAlign: 'center', lineHeight: 1.6 }}>
-              We confirm every login with a 6-digit code.
             </div>
           )}
         </div>
@@ -363,6 +376,8 @@ const S: Record<string, React.CSSProperties> = {
   fLabel: { fontFamily: mono, fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '0.7px', color: MUTED, fontWeight: 700, whiteSpace: 'nowrap' },
   input: { width: '100%', fontFamily: ui, fontSize: 12, padding: '9px 11px', border: `1px solid ${RULE}`, borderRadius: 2, background: PANEL2, color: TEXT, boxSizing: 'border-box' },
 
+  // New: the Supabase message strip. Type scale matches the old inline error;
+  // border/background are the semantic status color at low opacity.
   msgStrip: { marginTop: 10, padding: '7px 10px', border: '1px solid', borderRadius: 2, fontSize: 10.5, lineHeight: 1.5, textAlign: 'left' },
 
   consentRow: { display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 10.5, color: MUTED, lineHeight: 1.45, cursor: 'pointer' },

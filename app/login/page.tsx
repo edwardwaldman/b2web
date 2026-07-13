@@ -62,7 +62,7 @@ function Spin() {
   );
 }
 
-type Busy = null | 'auth';
+type Busy = null | 'auth' | 'google';
 type Msg = { kind: 'error' | 'success'; text: string } | null;
 
 export default function LoginPage() {
@@ -177,8 +177,26 @@ export default function LoginPage() {
     setBusy(null);
   };
 
-  // Google sign-in was removed for now. The button's slot is kept (hidden)
-  // below so the form doesn't shift and a real provider can drop back in.
+  // ── Google OAuth. Requires the provider to be enabled in Supabase. ───────
+  const google = async () => {
+    if (busy) return;
+    setMsg(null);
+    setBusy('google');
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/` },
+      });
+      if (error) {
+        setMsg(err(error.message));
+        setBusy(null);
+      }
+      // On success the browser navigates to Google; leave the spinner on.
+    } catch {
+      setMsg(err('Could not reach Google sign-in. Try again.'));
+      setBusy(null);
+    }
+  };
 
   const onEnter = (e: React.KeyboardEvent) => { if (e.key === 'Enter') submit(); };
 
@@ -200,12 +218,12 @@ export default function LoginPage() {
             {su ? 'Create a free account' : 'Log in to b2web.site'}
           </h1>
 
-          {/* Google sign-in removed; the slot is kept (hidden) so the form
-              below keeps its position and a real OAuth button can drop back in. */}
-          <div aria-hidden="true"
-            style={{ ...S.outBtn, width: '100%', justifyContent: 'center', background: PANEL2, visibility: 'hidden' }}>
-            &nbsp;
-          </div>
+          <button className="btnO" style={{ ...S.outBtn, width: '100%', justifyContent: 'center', background: PANEL2, ...(busy === 'google' ? { opacity: 0.75, cursor: 'default' } : null) }}
+            onClick={google} disabled={!!busy}>
+            {busy === 'google'
+              ? (<><Spin /> Connecting to Google</>)
+              : (<><span style={{ fontFamily: mono, fontWeight: 700 }}>G</span> {su ? 'Sign up' : 'Log in'} with Google</>)}
+          </button>
 
           <div style={S.orRow}>
             <span style={S.orLine} />

@@ -802,7 +802,7 @@ export default function Screener() {
     if (!authed && !admin) {
       setPendingPlan(plan);
       setUp(null);
-      setAuthErr(""); setAuthStep("form"); setAuthModal("signup");
+      goToLogin();
       return;
     }
     window.open("https://checkout.stripe.com", "_blank", "noopener");
@@ -830,7 +830,7 @@ export default function Screener() {
       setGeo({ lat: best.lat, lng: best.lng, city: best.n });
       setSort({ key: "dist", dir: "asc" });
       if (best.n === "San Francisco, CA" || admin || authed) setLocCity(best.n);
-      else { setPendingCity(best.n); setAuthModal("signup"); }
+      else { setPendingCity(best.n); goToLogin(); }
     }, 700);
   };
 
@@ -904,6 +904,11 @@ export default function Screener() {
 
   const endTour = () => { setTour(null); try { localStorage.setItem("b2w-tour", "1"); } catch {} };
   const nextTour = () => { if (tour < 3) setTour(tour + 1); };
+
+  // Every login / signup entry point now hands off to the real auth page.
+  // The in-app modal, the finviz wall, and the emailed-code step were a
+  // prototype; b2web.site/login is the real gate.
+  const goToLogin = () => { window.location.href = "https://b2web.site/login"; };
 
   // Prototype auth: flips the flag, applies a pending city unlock if the
   // signup came from the locate flow. Log out reverts to the SF demo slice.
@@ -1123,8 +1128,7 @@ export default function Screener() {
     if (authed || admin || walled.current || tour != null) return;
     const t = setTimeout(() => {
       walled.current = true;
-      setWall(true);
-      setAuthStep("form"); setAuthErr(""); setGateEmail(false); setGateMode("signup");
+      goToLogin();
     }, 120000);
     return () => clearTimeout(t);
   }, [authed, admin, tour]);
@@ -1403,7 +1407,7 @@ export default function Screener() {
           {admin ? (
             <button className="tierChipBtn" style={S.tierChip}
               title="Demo mode. Sign up to use a real account."
-              onClick={() => { setAuthErr(""); setAuthModal("signup"); }}>
+              onClick={goToLogin}>
               DEMO
             </button>
           ) : authed ? (
@@ -1433,9 +1437,9 @@ export default function Screener() {
           ) : (
             <>
               <button className="btnO" style={{ ...S.outBtn, padding: "6px 14px" }}
-                onClick={() => { setAuthErr(""); setAuthModal("login"); }}>Log in</button>
+                onClick={goToLogin}>Log in</button>
               <button className="btnP" style={{ ...S.priBtn, padding: "6px 16px" }}
-                onClick={() => { setAuthErr(""); setAuthModal("signup"); }}>Sign up</button>
+                onClick={goToLogin}>Sign up</button>
             </>
           )}
         </div>
@@ -2856,7 +2860,7 @@ export default function Screener() {
             onClick={() => {
               setLocPrompt(null);
               if (admin) return; // demo cannot request caching
-              if (!authed) { setPendingLoc(true); setAuthModal("signup"); return; }
+              if (!authed) { setPendingLoc(true); goToLogin(); return; }
               locate();
               flashGeo("Cache is coming to your area. We are building a 40 mile radius around you and will notify you when it is ready.");
             }}>
@@ -3311,8 +3315,8 @@ export default function Screener() {
       {tour != null && (
         <TourOverlay step={tour} onNext={nextTour} onBack={() => setTour((t) => Math.max(0, (t || 0) - 1))} onSkip={endTour}
           email={email} setEmail={setEmail}
-          onLogin={() => { endTour(); setAuthModal("login"); }}
-          onSignup={() => { signIn("free"); endTour(); }} />
+          onLogin={() => { endTour(); goToLogin(); }}
+          onSignup={() => { endTour(); goToLogin(); }} />
       )}
     </div>
   );

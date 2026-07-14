@@ -4,7 +4,6 @@ import "./globals.css";
 
 // Your new Auth imports
 import { AuthProvider } from "@/components/authprovider";
-import Header from "@/components/headerauth";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -21,20 +20,11 @@ export const metadata: Metadata = {
   description: "Identify and qualify the best business leads instantly with AI-powered screening tools.",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
-    >
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col">
-        {/* Wrap your header and children in the provider */}
         <AuthProvider>
-          <Header />
           {children}
         </AuthProvider>
       </body>

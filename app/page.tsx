@@ -1,5 +1,9 @@
 "use client";
 
+import { useAuth } from '@/components/authprovider';
+import { useProfileSync } from '@/utils/useProfileSync';
+import { flushProfileNow } from '@/utils/profile';
+
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -534,7 +538,7 @@ export default function Screener() {
   const [leaderOpen, setLeaderOpen] = useState(false);
   const [exportMenu, setExportMenu] = useState(false);
   const exportRef = useRef(null);
-  const [tier, setTier] = useState("free");        // "free" | "starter" | "unlimited"
+  useProfileSync({ theme, setTheme, keybinds, setKeybinds, notifPrefs, setNotifPrefs, setTier });       // "free" | "starter" | "unlimited"
   const [gateMode, setGateMode] = useState("signup"); // wall gate mode
   const [gateEmail, setGateEmail] = useState(false);  // gate: email form revealed
   const [gateConsent, setGateConsent] = useState(true);
@@ -607,8 +611,9 @@ export default function Screener() {
 
   // email is shared by auth and checkout. Auth is a prototype layer: signing
   // in flips a local flag; the magic link and providers are unbuilt.
-  const [email, setEmail] = useState("");
-  const [authed, setAuthed] = useState(false);
+  const { user, signOut } = useAuth();
+  const authed = !!user;
+  const email = user?.email ?? "";
   // Effective tier the UI behaves as. Admin previews any tier via simTier; a
   // signed-in user is their own tier; anonymous is free.
   const effTier = admin ? simTier : (authed ? tier : "free");
@@ -923,13 +928,15 @@ export default function Screener() {
     if (pendingLoc) { setPendingLoc(false); locate(); flashGeo("Cache is coming to your area. We are building a 40 mile radius around you and will notify you when it is ready."); } // finish the detect flow
     if (pendingPlan) { const pl = pendingPlan; setPendingPlan(null); setTier(pl); window.open("https://checkout.stripe.com", "_blank", "noopener"); }
   };
-  const doLogOut = () => {
-    if (busyAuth) return;
-    setBusyAuth("logout");
-    setTimeout(() => {
-      setAuthed(false); setTier("free"); setAcctMenu(false); setLocCity("San Francisco, CA");
-      setLogoutAsk(false); setBusyAuth(null);
-    }, 900);
+  const doLogOut = async () => {
+  if (busyAuth) return;
+  setBusyAuth("logout");
+  await flushProfileNow();            // a keybind changed 2s ago still lands
+  const { error } = await signOut();  // SIGNED_OUT flips `authed` via context
+  setBusyAuth(null);
+  if (error) { flashGeo("Could not sign out. Try again."); return; }
+  setTier("free"); setAcctMenu(false); setLocCity("San Francisco, CA");
+  setLogoutAsk(false);
   };
 
   // Registered-email store (prototype): signing up with a known email routes

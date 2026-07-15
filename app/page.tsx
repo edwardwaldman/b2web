@@ -456,7 +456,7 @@ const freshRow = (k) => {
   };
 };
 
-export default function Screener() {
+function Screener() {
   // filters + sort
   const [cat, setCat] = useState("All categories");
   const [minRev, setMinRev] = useState(0);
@@ -3937,3 +3937,4 @@ const CSS = `
     .cachePop { transition: none; }
   }
 `;
+export default Screener;

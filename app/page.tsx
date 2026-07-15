@@ -456,7 +456,7 @@ const freshRow = (k) => {
   };
 };
 
-function Screener() {
+export default function Screener() {
   // filters + sort
   const [cat, setCat] = useState("All categories");
   const [minRev, setMinRev] = useState(0);
@@ -569,6 +569,12 @@ function Screener() {
   const [radiusMi, setRadiusMi] = useState(3);
   const [rtOn, setRtOn] = useState(false);           // simulated live mode
   const [ultra, setUltra] = useState(false);         // ULTRA demo: hyper-live stats
+  // Viewers dock (bottom-left social proof). Admin can switch it off; the
+  // choice persists and outlives admin, so a clean recording stays clean.
+  const [viewersOn, setViewersOn] = useState(() => {
+    try { return localStorage.getItem("b2w-viewers") !== "0"; } catch {}
+    return true;
+  });
   const [simTier, setSimTier] = useState("unlimited"); // admin: which tier to preview
   const [adminAsk, setAdminAsk] = useState(false);   // admin password modal
   const [adminPw, setAdminPw] = useState("");
@@ -889,6 +895,10 @@ function Screener() {
     if (!admin) setUltra(false);
   }, [admin]);
 
+  useEffect(() => {
+    try { localStorage.setItem("b2w-viewers", viewersOn ? "1" : "0"); } catch {}
+  }, [viewersOn]);
+
   // Armed alerts (admin): simulate newly listed no-website businesses pushing
   // in. A toast drops from the top center ~1.2s after arming, then every 18s,
   // rotating through the cache (nearest first once located).
@@ -1048,6 +1058,22 @@ function Screener() {
     }, period);
     return () => clearInterval(t);
   }, [ultra]);
+
+  // LIVE (admin): the cache streams. Every 1.6s a newly listed no-website
+  // business lands on top and everything already in the fresh block ages a
+  // minute, so the feed visibly flows down and off the bottom at 40 rows.
+  // Sort pins to newest-first on the way in; a hand sort afterwards is left
+  // alone. No setBusy here: skeletons would strobe the table every tick.
+  useEffect(() => {
+    if (!(admin && ultra)) return;
+    setSort({ key: "listed", dir: "asc" });
+    const t = setInterval(() => {
+      const row = { ...freshRow(freshCount.current), listedAgoMin: 1 };
+      freshCount.current += 1;
+      setFresh((f) => [row, ...f.map((d) => ({ ...d, listedAgoMin: (d.listedAgoMin ?? 0) + 1 }))].slice(0, 40));
+    }, 1600);
+    return () => clearInterval(t);
+  }, [admin, ultra]);
 
   // Resend-code cooldown countdown
   useEffect(() => {
@@ -1892,8 +1918,12 @@ function Screener() {
                 {busy === "idle" && rows.map((d, i) => {
                   const isSel = selected === d.name;
                   const isMulti = multi.has(d.name);
+                  // Key on identity, never on index: a row landing on top shifts
+                  // every index below it, and an index key would remount and
+                  // re-animate the whole table each tick. name+addr is unique
+                  // across the mock cache, the 5,000 synthetic rows, and fresh.
                   return (
-                    <React.Fragment key={d.name + "|" + i}>
+                    <React.Fragment key={d.name + "|" + d.addr}>
                       <tr
                         ref={(el) => { el ? rowRefs.current.set(d.name, el) : rowRefs.current.delete(d.name); }}
                         className={`biz${isSel ? " sel" : ""}${isMulti ? " msel" : ""}${viewed.has(d.name) ? " seen" : ""}`}
@@ -3204,9 +3234,16 @@ function Screener() {
           </span>
         )}
         {admin && (
+          <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(viewersOn ? null : { color: RED, borderColor: RED }) }}
+            onClick={() => setViewersOn((v) => !v)} aria-pressed={viewersOn}
+            title="Show the viewing-now counter pinned bottom-left. Off keeps a recording clean and outlasts admin mode.">
+            VIEWERS{viewersOn ? "" : ": OFF"}
+          </button>
+        )}
+        {admin && (
           <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(ultra ? { color: RED, borderColor: RED } : null) }}
             onClick={() => setUltra((u) => !u)} aria-pressed={ultra}
-            title="ULTRA demo: hyper-live real-time cache with fast-moving statistics">
+            title="ULTRA demo: hyper-live real-time cache, streaming new listings and fast-moving statistics">
             LIVE{ultra ? ": ON" : ""}
           </button>
         )}
@@ -3285,13 +3322,16 @@ function Screener() {
         );
       })()}
 
-      {/* ── Current viewers (fixed, bottom-left): live social-proof tension ── */}
-      <div style={S.viewersDock} title="People viewing the San Francisco cache right now">
-        <Icon k="user" size={12} />
-        <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{viewers}</span>
-        <span style={{ color: MUTED }}>viewing now</span>
-        <span style={S.livePip} />
-      </div>
+      {/* ── Current viewers (fixed, bottom-left): live social-proof tension ──
+          Admin can switch this off from the dock (VIEWERS). ── */}
+      {viewersOn && (
+        <div style={S.viewersDock} title="People viewing the San Francisco cache right now">
+          <Icon k="user" size={12} />
+          <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{viewers}</span>
+          <span style={{ color: MUTED }}>viewing now</span>
+          <span style={S.livePip} />
+        </div>
+      )}
 
       {/* ── Alert toast: drops from the top center, previews a new listing ── */}
       {alertToast && (
@@ -3937,4 +3977,3 @@ const CSS = `
     .cachePop { transition: none; }
   }
 `;
-export default Screener;

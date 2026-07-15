@@ -1,7 +1,7 @@
 "use client";
 
-import { useAuth } from '@/components/authprovider';
-import { useProfileSync } from '@/utils/useProfileSync';
+import { useAuth } from '@/components/AuthProvider';
+import { useProfileSync } from '@/hooks/useProfileSync';
 import { flushProfileNow } from '@/utils/profile';
 
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react";
@@ -498,6 +498,7 @@ export default function Screener() {
   const [upBilling, setUpBilling] = useState("mo"); // "mo" | "yr"
   const [upTier, setUpTier] = useState(null);       // picked plan id, reveals trial form
   const [upErr, setUpErr] = useState(false);
+  const [trialEmail, setTrialEmail] = useState(""); // checkout field while signed out; the shared email is derived now
 
   // location: geolocate -> nearest city + nearest-first sort
   const [geo, setGeo] = useState(null);            // {lat, lng, city}
@@ -538,7 +539,7 @@ export default function Screener() {
   const [leaderOpen, setLeaderOpen] = useState(false);
   const [exportMenu, setExportMenu] = useState(false);
   const exportRef = useRef(null);
-  useProfileSync({ theme, setTheme, keybinds, setKeybinds, notifPrefs, setNotifPrefs, setTier });       // "free" | "starter" | "unlimited"
+  const [tier, setTier] = useState("free");        // "free" | "starter" | "unlimited"
   const [gateMode, setGateMode] = useState("signup"); // wall gate mode
   const [gateEmail, setGateEmail] = useState(false);  // gate: email form revealed
   const [gateConsent, setGateConsent] = useState(true);
@@ -581,6 +582,7 @@ export default function Screener() {
     try { if (!localStorage.getItem("b2w-tour")) return 0; } catch {}
     return null;
   });
+  const [tourEmail, setTourEmail] = useState(""); // tour signup field; the shared email is derived now
 
   // misc ui
   const [notes, setNotes] = useState({});
@@ -609,11 +611,15 @@ export default function Screener() {
     return "pitch";
   });
 
-  // email is shared by auth and checkout. Auth is a prototype layer: signing
-  // in flips a local flag; the magic link and providers are unbuilt.
+  // was: const [authed, setAuthed] = useState(false);
+  // was: const [email, setEmail]   = useState("");
   const { user, signOut } = useAuth();
   const authed = !!user;
   const email = user?.email ?? "";
+  // Mock settings become account settings. Anonymous: unchanged, localStorage
+  // only. Signed in: pull on load (first-ever sign-in seeds the row FROM the
+  // local state instead of clobbering it), push on change, debounced.
+  useProfileSync({ theme, setTheme, keybinds, setKeybinds, notifPrefs, setNotifPrefs, setTier });
   // Effective tier the UI behaves as. Admin previews any tier via simTier; a
   // signed-in user is their own tier; anonymous is free.
   const effTier = admin ? simTier : (authed ? tier : "free");
@@ -801,7 +807,7 @@ export default function Screener() {
   // Stripe. The prototype opens Stripe checkout and starts the trial at
   // that tier.
   const startTrial = (plan) => {
-    if (!email.trim()) { setUpErr(true); return; }
+    if (!authed && !admin && !trialEmail.trim()) { setUpErr(true); return; }
     // Logged-out: run the free signup first (email code), remembering the plan
     // so checkout resumes right after. Signed-in: straight to Stripe.
     if (!authed && !admin) {
@@ -918,7 +924,6 @@ export default function Screener() {
   // Prototype auth: flips the flag, applies a pending city unlock if the
   // signup came from the locate flow. Log out reverts to the SF demo slice.
   const signIn = (t) => {
-    setAuthed(true);
     if (t) setTier(t);
     setAuthModal(null);
     setWall(false);
@@ -929,14 +934,14 @@ export default function Screener() {
     if (pendingPlan) { const pl = pendingPlan; setPendingPlan(null); setTier(pl); window.open("https://checkout.stripe.com", "_blank", "noopener"); }
   };
   const doLogOut = async () => {
-  if (busyAuth) return;
-  setBusyAuth("logout");
-  await flushProfileNow();            // a keybind changed 2s ago still lands
-  const { error } = await signOut();  // SIGNED_OUT flips `authed` via context
-  setBusyAuth(null);
-  if (error) { flashGeo("Could not sign out. Try again."); return; }
-  setTier("free"); setAcctMenu(false); setLocCity("San Francisco, CA");
-  setLogoutAsk(false);
+    if (busyAuth) return;
+    setBusyAuth("logout");
+    await flushProfileNow();            // a keybind changed 2s ago still lands
+    const { error } = await signOut();  // SIGNED_OUT flips `authed` via context
+    setBusyAuth(null);
+    if (error) { flashGeo("Could not sign out. Try again."); return; }
+    setTier("free"); setAcctMenu(false); setLocCity("San Francisco, CA");
+    setLogoutAsk(false);
   };
 
   // Registered-email store (prototype): signing up with a known email routes
@@ -962,7 +967,6 @@ export default function Screener() {
       setDeleteAsk(false); setDeleteText("");
       setAcctOpen(false);
       doLogOut();
-      setEmail("");
       setBusyAuth(null);
       flashGeo("Account deleted. You are back on the anonymous San Francisco cache.");
     }, 1200);
@@ -2384,9 +2388,9 @@ export default function Screener() {
             const price = planPrice(pl, upBilling);
             return (
               <div style={{ marginTop: 10 }}>
-                <input placeholder="email or phone number" style={{ ...S.input, ...(upErr && !email.trim() ? { borderColor: RED } : null) }}
-                  aria-label="Email address" value={email} onChange={(e) => setEmail(e.target.value)} />
-                {upErr && !email.trim() && (
+                <input placeholder="email or phone number" style={{ ...S.input, ...(upErr && !trialEmail.trim() ? { borderColor: RED } : null) }}
+                  aria-label="Email address" value={trialEmail} onChange={(e) => setTrialEmail(e.target.value)} />
+                {upErr && !trialEmail.trim() && (
                   <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>Must fill in required fields.</div>
                 )}
                 <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 8, justifyContent: "center" }}
@@ -2607,7 +2611,7 @@ export default function Screener() {
             </div>
             <div style={{ ...S.fLabel, marginBottom: 6 }}>Email or phone number</div>
             <input style={S.input} aria-label="Account email" placeholder="email or phone number"
-              value={email} onChange={(e) => setEmail(e.target.value)} />
+              value={email} readOnly />
             <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>New password</div>
             <input type="password" style={S.input} aria-label="New password" placeholder="••••••••"
               value={authPw} onChange={(e) => setAuthPw(e.target.value)} />
@@ -3076,7 +3080,7 @@ export default function Screener() {
                   </div>
                   <div style={{ ...S.fLabel, marginBottom: 6 }}>Email or phone number</div>
                   <input placeholder="email or phone number" style={{ ...S.input, ...(authErr && !email.trim() ? { borderColor: RED } : null) }}
-                    aria-label="Email or phone number" value={email} onChange={(e) => setEmail(e.target.value)} />
+                    aria-label="Email or phone number" value={email} readOnly />
                   {needsPhone(email) && (
                     <>
                       <div style={{ ...S.fLabel, margin: "10px 0 6px" }}>Phone number</div>
@@ -3321,7 +3325,7 @@ export default function Screener() {
       {/* ── First-visit tour: 3 steps ── */}
       {tour != null && (
         <TourOverlay step={tour} onNext={nextTour} onBack={() => setTour((t) => Math.max(0, (t || 0) - 1))} onSkip={endTour}
-          email={email} setEmail={setEmail}
+          email={tourEmail} setEmail={setTourEmail}
           onLogin={() => { endTour(); goToLogin(); }}
           onSignup={() => { endTour(); goToLogin(); }} />
       )}

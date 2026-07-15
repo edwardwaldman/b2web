@@ -1,7 +1,7 @@
 "use client";
 
-import { useAuth } from '@/components/AuthProvider';
-import { useProfileSync } from '@/hooks/useProfileSync';
+import { useAuth } from '@/components/authprovider';
+import { useProfileSync } from '@/utils/useProfileSync';
 import { flushProfileNow } from '@/utils/profile';
 
 import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react";

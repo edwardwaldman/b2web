@@ -596,6 +596,7 @@ function Screener() {
     return true;
   });
   const [simTier, setSimTier] = useState("unlimited"); // admin: which tier to preview
+  const [deskNote, setDeskNote] = useState(true);    // ≤768px: "use desktop" strip
   const [adminAsk, setAdminAsk] = useState(false);   // admin password modal
   const [adminPw, setAdminPw] = useState("");
   const [adminErr, setAdminErr] = useState(false);
@@ -1535,6 +1536,19 @@ function Screener() {
         <MobileScreener label="Screener menu" items={mnavItems} />
       </header>
 
+      {/* ≤768px only: mobile is a compact read-only slice of the screener.
+          Power filters, compare, exports, and views live on desktop, so say
+          so up front instead of letting the missing chrome read as broken. */}
+      {deskNote && (
+        <div className="mobileNotice" role="note">
+          <span>
+            <strong style={{ color: TEXT }}>To unlock the full abilities of the screener, use B2Web on desktop.</strong>{" "}
+            Mobile shows a compact view: business, reviews, stars, and website status.
+          </span>
+          <button className="mobileNoticeX" onClick={() => setDeskNote(false)} aria-label="Dismiss notice">✕</button>
+        </div>
+      )}
+
       {/* Control deck: free filters left, locked power filters right — visible, never hidden */}
       <div className="filtersDeck" style={S.filters}>
         <div style={S.fGroup}>
@@ -1613,7 +1627,7 @@ function Screener() {
           )}
         </div>
 
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+        <div className="viewGroup" style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
           <span style={S.fLabel}>View</span>
           <span style={S.billSeg} role="tablist" aria-label="Layout view">
             {[["grid", "Grid"], ["split", "Split"], ["trending", "Trending"]].map(([v, lab]) => {
@@ -1942,7 +1956,7 @@ function Screener() {
               <thead>
                 <tr>
                   {isPaid && (
-                    <th scope="col" style={{ ...S.th, width: 30, textAlign: "center", padding: "0 4px" }}>
+                    <th scope="col" className="mCol" style={{ ...S.th, width: 30, textAlign: "center", padding: "0 4px" }}>
                       <input type="checkbox" aria-label="Select all rows"
                         checked={rows.length > 0 && rows.every((d) => picks.has(d.name))}
                         onChange={(e) => { const all = e.target.checked; setPicks((pv) => { const n = new Set(pv); rows.forEach((d) => all ? n.add(d.name) : n.delete(d.name)); return n; }); }}
@@ -1952,11 +1966,11 @@ function Screener() {
                   <Th k="name" label="Business" sort={sort} onSort={toggleSort} style={{ width: "26%" }} />
                   <Th k="rev" label="Reviews" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 64 }} />
                   <Th k="rating" label="Stars" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 60 }} />
-                  <Th k="listed" label="Listed" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 72 }} />
-                  <Th k="addr" label="Address" sort={sort} onSort={toggleSort} style={{ width: "30%" }} />
+                  <Th k="listed" label="Listed" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 72 }} />
+                  <Th k="addr" label="Address" sort={sort} onSort={toggleSort} className="mCol" style={{ width: "30%" }} />
                   <Th k="status" label="Website status" sort={sort} onSort={toggleSort} style={{ width: 124 }} />
-                  <Th k="views" label="Viewing" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 74 }} />
-                  <th scope="col" style={{ ...S.th, width: 104 }}>Phone</th>
+                  <Th k="views" label="Viewing" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 74 }} />
+                  <th scope="col" className="mCol" style={{ ...S.th, width: 104 }}>Phone</th>
                 </tr>
               </thead>
               <tbody>
@@ -1985,7 +1999,7 @@ function Screener() {
                         onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
                       >
                         {isPaid && (
-                          <td style={{ ...S.td, textAlign: "center", padding: "0 4px" }} onClick={(e) => e.stopPropagation()}>
+                          <td className="mCol" style={{ ...S.td, textAlign: "center", padding: "0 4px" }} onClick={(e) => e.stopPropagation()}>
                             <input type="checkbox" checked={picks.has(d.name)}
                               onChange={() => setPicks((pv) => { const n = new Set(pv); n.has(d.name) ? n.delete(d.name) : n.add(d.name); return n; })}
                               style={{ accentColor: BLUE_DEEP, cursor: "pointer", verticalAlign: "middle" }}
@@ -2013,10 +2027,10 @@ function Screener() {
                         <td style={{ ...S.td, textAlign: "right", fontFamily: mono }}>
                           <span style={{ fontVariantNumeric: "tabular-nums", color: TEXT }}>{ratingOf(d).toFixed(1)}</span><span style={{ color: AMBER, marginLeft: 2 }}>★</span>
                         </td>
-                        <td style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: d.listedAgoMin != null ? GREEN : MUTED }}>
+                        <td className="mCol" style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: d.listedAgoMin != null ? GREEN : MUTED }}>
                           {listedLabel(d)}
                         </td>
-                        <td style={S.td}>
+                        <td className="mCol" style={S.td}>
                           <span style={{ color: TEXT }}>{d.addr}</span>
                           <span style={{ marginLeft: 8, fontSize: 10, color: MUTED }}>{d.hood}</span>
                           {geo && (
@@ -2026,11 +2040,11 @@ function Screener() {
                           )}
                         </td>
                         <td style={S.td}><Status d={d} /></td>
-                        <td style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: viewersOf(d) <= 8 ? GREEN : viewersOf(d) >= 32 ? RED : MUTED }}
+                        <td className="mCol" style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: viewersOf(d) <= 8 ? GREEN : viewersOf(d) >= 32 ? RED : MUTED }}
                           title={viewersOf(d) <= 8 ? "Few eyes on this lead right now" : viewersOf(d) >= 32 ? "Crowded: many agencies looking" : "Moderate attention"}>
                           {viewersOf(d)}
                         </td>
-                        <td style={S.td}>
+                        <td className="mCol" style={S.td}>
                           <span className={copiedName === d.name ? "phoneHit" : ""} style={S.phoneSpan}
                             onClick={(e) => { e.stopPropagation(); copyPhone(d); }}
                             title="Click to copy">
@@ -2440,7 +2454,7 @@ function Screener() {
               <div style={{ fontSize: 10.5, color: MUTED, lineHeight: 1.5 }}>{up.feature.body}</div>
             </div>
           )}
-          <div style={S.tierGrid}>
+          <div className="tierGrid" style={S.tierGrid}>
             {PLANS.map((pl) => {
               const price = planPrice(pl, upBilling);
               const picked = upTier === pl.id;
@@ -3426,9 +3440,9 @@ function Screener() {
   );
 }
 
-function Th({ k, label, sort, onSort, style }) {
+function Th({ k, label, sort, onSort, style, className }) {
   return (
-    <th scope="col" style={{ ...S.th, cursor: "pointer", ...style }} onClick={() => onSort(k)}
+    <th scope="col" className={className} style={{ ...S.th, cursor: "pointer", ...style }} onClick={() => onSort(k)}
       aria-sort={sort.key === k ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
       {label} {sort.key === k && <Caret dir={sort.dir} />}
     </th>
@@ -3599,14 +3613,16 @@ const rlFmt = (sec) => (sec >= 60 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `$
 // production these states are real: the first paint waits on the cache read,
 // and every filter change is an index lookup, not an in-memory array filter.
 function SkeletonRows({ n = 12 }) {
-  // Per-column bar widths (%) mimic the real content rhythm.
+  // Per-column bar widths (%) mimic the real content rhythm. Columns 3, 4,
+  // 6, 7 (listed, address, viewing, phone) hide on mobile like the real ones.
   const cols = [[62, 34], [48], [40], [46], [70, 30], [58], [40], [72]];
+  const mHidden = new Set([3, 4, 6, 7]);
   return (
     <>
       {Array.from({ length: n }).map((_, r) => (
         <tr key={r} className="skelRow" aria-hidden="true">
           {cols.map((bars, c) => (
-            <td key={c} style={{ ...S.td, verticalAlign: "middle" }}>
+            <td key={c} className={mHidden.has(c) ? "mCol" : undefined} style={{ ...S.td, verticalAlign: "middle" }}>
               <span style={{ display: "inline-flex", gap: 6, width: "100%" }}>
                 {bars.map((w, b) => (
                   <span key={b} className="skel" style={{ width: w + "%", height: 9, borderRadius: 2 }} />
@@ -4042,7 +4058,39 @@ const CSS = `
   html, body { overflow-x: hidden; max-width: 100%; }
   .tableWrap { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
 
+  /* "Use desktop" strip: desktop never sees it; ≤768px it sits right under
+     the top bar and explains why the mobile view is slimmer. */
+  .mobileNotice {
+    display: none; align-items: flex-start; gap: 10px;
+    padding: 9px 12px; font-size: 11px; line-height: 1.5; color: ${MUTED};
+    background: color-mix(in srgb, var(--amber) 7%, ${PANEL});
+    border-bottom: 1px solid ${LINE};
+  }
+  .mobileNoticeX {
+    margin-left: auto; flex-shrink: 0; padding: 2px 8px;
+    background: none; border: none; color: ${MUTED}; font-size: 12px;
+    line-height: 1; cursor: pointer;
+  }
+  .mobileNoticeX:hover { color: ${TEXT}; }
+
   @media (max-width: 768px) {
+    .mobileNotice { display: flex; }
+
+    /* Strip the clunk: power filters + credits/API strip, the Deal Race
+       banner, and the Grid/Split/Trending cluster are desktop features.
+       The notice strip above points people there. */
+    .lockedRow, .contest, .viewGroup { display: none !important; }
+
+    /* The table shows only business, reviews, stars, and website status,
+       so every row fits the viewport with no horizontal scrolling. The
+       rest (address, phone, listed, viewing) lives in the row's detail
+       pane, one tap away. */
+    .mCol { display: none !important; }
+    .tbl { min-width: 0 !important; }
+
+    /* Admin QA dock: wrap instead of pushing the viewport wide, and keep
+       clear of the home indicator. */
+    .adminDock { flex-wrap: wrap; justify-content: flex-end; max-width: calc(100vw - 20px); bottom: calc(10px + env(safe-area-inset-bottom)) !important; }
     .topbar { padding: 4px 10px !important; row-gap: 4px !important; }
     /* Search leaves the absolute center for a full-width second line —
        static flow, so it can never overlap the brand or push the page wide */
@@ -4063,13 +4111,20 @@ const CSS = `
     .split { flex-direction: column; }
 
     .endCap { padding: 12px 10px 4px !important; }
-    .siteFooter { padding: 12px 10px 32px !important; }
+    /* Extra bottom room so the fixed admin dock never sits on the links */
+    .siteFooter { padding: 12px 10px 96px !important; }
     .bizBar { padding: 8px 10px !important; }
     .bizInner { padding: 14px 10px 46px !important; }
     .gateLeft { padding: 16px 14px 20px !important; }
 
-    /* Anchored popovers clamp to the viewport instead of overflowing it */
-    .upPop { left: 8px !important; right: 8px !important; width: auto !important; }
+    /* The Go-unlimited popover becomes a bottom sheet: full width, pinned
+       above the home indicator, scrolling internally. The anchored x/y from
+       the click would otherwise push it half off-screen. */
+    .upPop {
+      left: 8px !important; right: 8px !important; width: auto !important;
+      top: auto !important; bottom: calc(8px + env(safe-area-inset-bottom)) !important;
+      max-height: min(78vh, 560px); overflow-y: auto;
+    }
 
     /* Fluid type: big headings scale down instead of wrapping awkwardly.
        clamp() keeps them proportional between 320px and 768px viewports. */
@@ -4078,6 +4133,12 @@ const CSS = `
 
     /* The fixed social-proof dock would sit on top of table rows */
     .viewersDock { display: none !important; }
+  }
+
+  /* Narrow phones: the two side-by-side tier cards would squeeze prices and
+     feature lists into ~140px columns — stack them instead. */
+  @media (max-width: 480px) {
+    .tierGrid { grid-template-columns: 1fr !important; }
   }
 
   /* Touch targets: 44x44 minimum on touch screens. min-* constraints clamp

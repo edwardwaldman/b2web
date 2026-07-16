@@ -1,6 +1,7 @@
 "use client";
 
-import MobileScreener from '@/components/m/MobileScreener';
+import React, { useState, useEffect } from "react";
+import MobileScreener from '@/m/MobileScreener';
 import { useAuth } from '@/components/authprovider';
 import { useProfileSync } from '@/utils/useProfileSync';
 import { flushProfileNow } from '@/utils/profile';
@@ -119,6 +120,7 @@ useEffect(() => {
 if (isMobileSubdomain) {
   return <MobileScreener />;
 }
+
 const BG = "var(--bg)";          // page
 const PANEL = "var(--panel)";       // control deck, count strip, pane
 const PANEL2 = "var(--panel-2)";      // inputs, hover, wells
@@ -479,6 +481,23 @@ const freshRow = (k) => {
 };
 
 export default function Screener() {
+  const [isMobileSubdomain, setIsMobileSubdomain] = useState(false);
+
+  useEffect(() => {
+    const currentHost = window.location.hostname;
+    if (currentHost === 'm.b2web.site') {
+      setIsMobileSubdomain(true);
+    } else {
+      const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      if (isMobileDevice && currentHost === 'app.b2web.site') {
+        window.location.replace('https://m.b2web.site');
+      }
+    }
+  }, []);
+
+  if (isMobileSubdomain) {
+    return <MobileScreener />;
+  }
   // filters + sort
   const [cat, setCat] = useState("All categories");
   const [minRev, setMinRev] = useState(0);
@@ -3998,4 +4017,10 @@ const CSS = `
     .phoneHit, .kpulse { animation: none; }
     .cachePop { transition: none; }
   }
+    return (
+    <main style={{ background: BG }}>
+      {/* desktop stuff */}
+    </main>
+  );
+}
 `;

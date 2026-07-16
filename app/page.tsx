@@ -1,5 +1,6 @@
 "use client";
 
+import MobileScreener from '@/components/m/MobileScreener';
 import { useAuth } from '@/components/authprovider';
 import { useProfileSync } from '@/utils/useProfileSync';
 import { flushProfileNow } from '@/utils/profile';
@@ -96,7 +97,28 @@ import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "re
 // system stack ~11.5px tabular-nums, no webfonts, radius 2, no em dashes.
 // Cache honesty everywhere: "of N in cache", "checked Jun 5" provenance.
 // ─────────────────────────────────────────────────────────────────────────────
+// 1. Create a state to track if the user is on the mobile domain
+const [isMobileSubdomain, setIsMobileSubdomain] = useState(false);
 
+useEffect(() => {
+  // This code only runs in the browser, so 'window' is completely safe here
+  const currentHost = window.location.hostname;
+
+  if (currentHost === 'm.b2web.site') {
+    setIsMobileSubdomain(true);
+  } else {
+    // 2. Optional: Bouncer logic to redirect mobile users who type the desktop URL
+    const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    if (isMobileDevice && currentHost === 'app.b2web.site') {
+      window.location.replace('https://m.b2web.site');
+    }
+  }
+}, []);
+
+// 3. If they are on the mobile domain, short-circuit and render the mobile view instead
+if (isMobileSubdomain) {
+  return <MobileScreener />;
+}
 const BG = "var(--bg)";          // page
 const PANEL = "var(--panel)";       // control deck, count strip, pane
 const PANEL2 = "var(--panel-2)";      // inputs, hover, wells

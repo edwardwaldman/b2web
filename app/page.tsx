@@ -1,12 +1,11 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react";
+
 import MobileScreener from '@/m/MobileScreener';
 import { useAuth } from '@/components/authprovider';
 import { useProfileSync } from '@/utils/useProfileSync';
 import { flushProfileNow } from '@/utils/profile';
-
-import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "react";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // b2website.list — SF screener (Step 1) · v3 "robust control panel"
@@ -98,28 +97,6 @@ import React, { useState, useMemo, useEffect, useLayoutEffect, useRef } from "re
 // system stack ~11.5px tabular-nums, no webfonts, radius 2, no em dashes.
 // Cache honesty everywhere: "of N in cache", "checked Jun 5" provenance.
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. Create a state to track if the user is on the mobile domain
-const [isMobileSubdomain, setIsMobileSubdomain] = useState(false);
-
-useEffect(() => {
-  // This code only runs in the browser, so 'window' is completely safe here
-  const currentHost = window.location.hostname;
-
-  if (currentHost === 'm.b2web.site') {
-    setIsMobileSubdomain(true);
-  } else {
-    // 2. Optional: Bouncer logic to redirect mobile users who type the desktop URL
-    const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    if (isMobileDevice && currentHost === 'app.b2web.site') {
-      window.location.replace('https://m.b2web.site');
-    }
-  }
-}, []);
-
-// 3. If they are on the mobile domain, short-circuit and render the mobile view instead
-if (isMobileSubdomain) {
-  return <MobileScreener />;
-}
 
 const BG = "var(--bg)";          // page
 const PANEL = "var(--panel)";       // control deck, count strip, pane
@@ -480,24 +457,26 @@ const freshRow = (k) => {
   };
 };
 
-export default function Screener() {
-  const [isMobileSubdomain, setIsMobileSubdomain] = useState(false);
-
+// Route entry. Hosts must not fork the UI: the screener below is fully
+// responsive, so m.b2web.site serves the exact same component and the
+// mobile-first layer kicks in by viewport. (MobileScreener is the hamburger
+// nav the screener mounts in its header — it is not a standalone page, so
+// early-returning it here would render an empty menu and nothing else.)
+// The only host-specific behavior is the bounce: a phone that lands on the
+// desktop host gets moved to the mobile host.
+export default function Page() {
   useEffect(() => {
     const currentHost = window.location.hostname;
-    if (currentHost === 'm.b2web.site') {
-      setIsMobileSubdomain(true);
-    } else {
-      const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-      if (isMobileDevice && currentHost === 'app.b2web.site') {
-        window.location.replace('https://m.b2web.site');
-      }
+    const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    if (isMobileDevice && currentHost === "app.b2web.site") {
+      window.location.replace("https://m.b2web.site");
     }
   }, []);
 
-  if (isMobileSubdomain) {
-    return <MobileScreener />;
-  }
+  return <Screener />;
+}
+
+function Screener() {
   // filters + sort
   const [cat, setCat] = useState("All categories");
   const [minRev, setMinRev] = useState(0);
@@ -1363,6 +1342,37 @@ export default function Screener() {
   // ── Pane content (business detail only) ─────────────────────────────────────
   const paneTitle = pane.mode === "business" && selBiz ? selBiz.name : "";
 
+  // Mobile nav: the desktop header cluster restated as dense menu rows. The
+  // burger sits inside the existing top bar, so the menu costs zero vertical
+  // space; every action delegates to the same handlers the desktop uses.
+  const mnavItems = [
+    { key: "search", label: "Search businesses", hint: "/", onClick: () => searchInputRef.current?.focus() },
+    { key: "loc", label: locating ? "Locating..." : `Location: ${locCity}`, onClick: () => setLocPrompt({ x: 8, y: 56 }) },
+    { key: "alerts", label: "No-website alerts", hint: isPaid ? null : "Paid", onClick: () => (isPaid
+      ? flashGeo("Alerts are armed: new no-website listings will notify you")
+      : openUnlimitedAt({ title: "Alerts", body: "Get notified the moment a new no-website business appears in your categories and area. Alerts ship with the paid plans." })) },
+    { key: "lists", label: "Saved lists", hint: isPaid ? null : "Paid", onClick: () => (isPaid
+      ? flashGeo("Saved lists: you have no lists yet. Select leads and choose Add to list.")
+      : openUnlimitedAt({ title: "Saved lists", body: "Group leads into named lists (Barbers, Follow-ups, Won) and jump back to them any time. Saved lists ship with the paid plans." })) },
+    { key: "plans", label: "Plans & pricing", onClick: () => openUnlimitedAt() },
+    { key: "about", label: "About", onClick: () => setInfoPage("about") },
+    { key: "help", label: "Help", onClick: () => setInfoPage("help") },
+    { key: "theme", label: `Theme: ${theme === "light" ? "Light" : theme === "pitch" ? "Pitch black" : "Dark"}`,
+      onClick: () => setTheme((t) => (t === "light" ? "dark" : t === "dark" ? "pitch" : "light")) },
+    { key: "d1", kind: "divider" },
+    ...(authed
+      ? [
+          { key: "acctHead", kind: "heading", label: email || "Account" },
+          { key: "acct", label: "Manage account", onClick: () => setAcctOpen(true) },
+          { key: "prefs", label: "Preferences", onClick: () => setAcctOpen2(true) },
+          { key: "logout", label: "Log out", onClick: () => setLogoutAsk(true) },
+        ]
+      : [
+          { key: "login", label: "Log in", onClick: goToLogin },
+          { key: "signup", label: "Sign up free", accent: true, onClick: goToLogin },
+        ]),
+  ];
+
   return (
     <div ref={rootRef} style={{ ...S.root, paddingBottom: 24 }} className={!admin && guard ? "snapguard" : ""}>
       <style>{CSS}</style>
@@ -1373,7 +1383,7 @@ export default function Screener() {
       )}
 
       {/* Top bar — the whole header. No hero, no tagline. */}
-      <header style={S.topbar}>
+      <header className="topbar" style={S.topbar}>
         <div style={S.brandWrap}>
           <button style={S.brandBtn} onClick={resetAll} title="Reset filters">
             <span style={{ color: TEXT, fontWeight: 700 }}>B2Web</span>
@@ -1381,8 +1391,8 @@ export default function Screener() {
           </button>
         </div>
 
-        <div style={S.centerUnit}>
-        <div ref={searchWrapRef} style={S.searchWrapInner}>
+        <div className="centerUnit" style={S.centerUnit}>
+        <div ref={searchWrapRef} className="searchWrapInner" style={S.searchWrapInner}>
           <span style={S.searchIcon} aria-hidden="true"><Icon k="search" size={12} /></span>
           <input ref={searchInputRef} style={S.searchInput} placeholder="Search businesses ( / )"
             aria-label="Search businesses" value={q}
@@ -1433,7 +1443,7 @@ export default function Screener() {
             <span style={{ color: TEXT, fontWeight: 700 }}>{locating ? "Locating..." : locCity}</span>
           </button>
         </div>
-        <div style={S.topMeta}>
+        <div className="topMeta" style={S.topMeta}>
           <span ref={notifRef} style={{ position: "relative", display: "inline-flex" }}>
             <button className="themeBtn" style={S.themeBtn} aria-label="Notifications"
               title={isPaid ? "New no-website listings you missed" : "Alerts are a paid feature"}
@@ -1521,10 +1531,12 @@ export default function Screener() {
             </>
           )}
         </div>
+        {/* ≤768px: the header cluster above hides and this burger takes over */}
+        <MobileScreener label="Screener menu" items={mnavItems} />
       </header>
 
       {/* Control deck: free filters left, locked power filters right — visible, never hidden */}
-      <div style={S.filters}>
+      <div className="filtersDeck" style={S.filters}>
         <div style={S.fGroup}>
           <label style={S.fLabel} htmlFor="f-cat">Category</label>
           <select id="f-cat" style={S.select} value={admin && multiCatOn ? "All categories" : cat}
@@ -1642,7 +1654,7 @@ export default function Screener() {
       </div>
 
       {/* Power (paid) filters — their own row beneath the free filters */}
-      <div style={S.lockedRow}>
+      <div className="lockedRow" style={S.lockedRow}>
         <span style={S.fLabel}>Power filters</span>
         <div style={S.lockedChips} aria-label="Locked paid features">
           {Object.keys(FEATURES).filter((l) => l !== "Custom filters").map((l) => {
@@ -1707,7 +1719,7 @@ export default function Screener() {
             )}
           </span>
         )}
-        <div style={{ ...S.sysRead, marginLeft: isPaid ? 0 : "auto" }} title="System status">
+        <div className="sysRead" style={{ ...S.sysRead, marginLeft: isPaid ? 0 : "auto" }} title="System status">
           <span style={S.sysK}>Credits</span>
           <span style={S.sysV}>{isUnlimited ? "Unlimited" : effTier === "starter" ? "40 / mo" : "0"}</span>
           <span style={S.vruleSm} />
@@ -1725,7 +1737,7 @@ export default function Screener() {
       </div>
 
       {/* Count strip: locate, the paid-gated no-website toggle, sort, stats */}
-      <div style={S.countStrip}>
+      <div className="countStrip" style={S.countStrip}>
         <label style={{ ...S.fLabel, marginRight: -4 }} htmlFor="f-sort">Sort</label>
         <select id="f-sort" style={{ ...S.select, minWidth: 150 }} value={`${sort.key}:${sort.dir}`}
           onChange={(e) => {
@@ -1899,7 +1911,7 @@ export default function Screener() {
 
       {/* ── Season contest banner: closed-deal leaderboard ── */}
       {(
-        <div style={S.contest} onClick={() => { setUp(null); setLeaderOpen(true); }} role="button" tabIndex={0}
+        <div className="contest" style={S.contest} onClick={() => { setUp(null); setLeaderOpen(true); }} role="button" tabIndex={0}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setUp(null); setLeaderOpen(true); } }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span style={S.contestTag}>B2WEB S1</span>
@@ -1922,7 +1934,7 @@ export default function Screener() {
       )}
 
       {/* ── 70/30 split: table left, detail pane right ─────────────────────── */}
-      <div style={S.split}>
+      <div className="split" style={S.split}>
         <main style={S.main}>
           <div style={{ display: "flex", gap: 0, alignItems: "stretch" }}>
           <div className="tableWrap" style={{ flex: view === "split" ? "1 1 0" : "1 1 auto", minWidth: 0, display: view === "trending" ? "none" : "block" }}>
@@ -2173,7 +2185,7 @@ export default function Screener() {
               spent by design; the copy states the shared-snapshot mechanics and
               sells the real-time cache as the edge over competitors. */}
           {!isPaid && (
-          <div style={S.endCap}>
+          <div className="endCap" style={S.endCap}>
             <div style={{ fontSize: 12.5, color: TEXT, fontWeight: 700, marginBottom: 4 }}>
               No more businesses without a website?
             </div>
@@ -2206,7 +2218,7 @@ export default function Screener() {
           </div>
           )}
 
-          <footer style={S.footer}>
+          <footer className="siteFooter" style={S.footer}>
             <span>b2web.site. Anonymous view shows the San Francisco cache only.</span>
             <SiteFooter onHelp={() => setInfoPage("help")} />
           </footer>
@@ -2410,7 +2422,7 @@ export default function Screener() {
 
       {/* ── "Go unlimited" popover: anchored under whatever upsell was clicked ── */}
       {up && (
-        <div ref={upRef} style={{ ...S.upPop, left: up.x, top: up.y }} role="dialog" aria-label="Go unlimited">
+        <div ref={upRef} className="upPop" style={{ ...S.upPop, left: up.x, top: up.y }} role="dialog" aria-label="Go unlimited">
           <div style={S.upHead}>
             <span style={{ fontWeight: 700, color: TEXT }}>Go unlimited</span>
             <span style={S.billSeg} role="tablist" aria-label="Billing period">
@@ -2756,13 +2768,13 @@ export default function Screener() {
         const d = bizPage, sb = statusBits(d), rv = reviewsOf(d);
         return (
           <div style={S.bizPage} role="dialog" aria-modal="true" aria-label={`${d.name} page`}>
-            <div style={S.bizBar}>
+            <div className="bizBar" style={S.bizBar}>
               <button style={S.brandBtn} onClick={() => setBizPage(null)} title="Back to the screener">
                 <span style={{ color: TEXT }}>B2Web</span><span style={{ color: RED, fontFamily: mono }}>.site</span>
               </button>
               <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px" }} onClick={() => setBizPage(null)}>Back to results</button>
             </div>
-            <div style={S.bizScroll}><div style={S.bizInner}>
+            <div style={S.bizScroll}><div className="bizInner" style={S.bizInner}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 18, flexWrap: "wrap", alignItems: "flex-start" }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -2988,13 +3000,13 @@ export default function Screener() {
       {/* ── About / Help pages (full view) ── */}
       {infoPage && (
         <div style={S.bizPage} role="dialog" aria-modal="true" aria-label={infoPage === "about" ? "About b2web.site" : infoPage === "terms" ? "Terms of Service" : infoPage === "privacy" ? "Privacy Policy" : "Help"}>
-          <div style={S.bizBar}>
+          <div className="bizBar" style={S.bizBar}>
             <button style={S.brandBtn} onClick={() => setInfoPage(null)} title="Back to the screener">
               <span style={{ color: TEXT }}>B2Web</span><span style={{ color: RED, fontFamily: mono }}>.site</span>
             </button>
             <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px" }} onClick={() => setInfoPage(null)}>Back to results</button>
           </div>
-          <div style={S.bizScroll}><div style={{ ...S.bizInner, maxWidth: 720 }}>
+          <div style={S.bizScroll}><div className="bizInner" style={{ ...S.bizInner, maxWidth: 720 }}>
             {infoPage === "about" && (
               <>
                 <h1 style={S.infoH1}>About B2Web.site</h1>
@@ -3107,7 +3119,7 @@ export default function Screener() {
           {!isWall && (
             <button className="cancelBtn" style={{ ...S.cancelBtn, top: 16, right: 20, zIndex: 2 }} onClick={close} aria-label="Cancel">Cancel</button>
           )}
-          <div style={S.gateLeft}>
+          <div className="gateLeft" style={S.gateLeft}>
             <button style={{ ...S.brandBtn, fontSize: 16, alignSelf: "flex-start" }} onClick={close} title={isWall ? "b2web.site" : "Back to the screener"}>
               <span style={{ color: TEXT }}>B2Web</span><span style={{ color: RED, fontFamily: mono }}>.site</span>
             </button>
@@ -3366,7 +3378,7 @@ export default function Screener() {
       {/* ── Current viewers (fixed, bottom-left): live social-proof tension ──
           Admin can switch this off from the dock (VIEWERS). ── */}
       {viewersOn && (
-        <div style={S.viewersDock} title="People viewing the San Francisco cache right now">
+        <div className="viewersDock" style={S.viewersDock} title="People viewing the San Francisco cache right now">
           <Icon k="user" size={12} />
           <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{viewers}</span>
           <span style={{ color: MUTED }}>viewing now</span>
@@ -4009,7 +4021,9 @@ const CSS = `
     .bizCols { grid-template-columns: 1fr; }
   }
   @media (max-width: 860px) {
-    .gateRight { display: none; }
+    /* !important: the pane carries display:flex inline, which would
+       otherwise win and overlay the form on phones */
+    .gateRight { display: none !important; }
   }
   @media (prefers-reduced-motion: reduce) {
     tbody tr.biz { animation: none; }
@@ -4017,10 +4031,85 @@ const CSS = `
     .phoneHit, .kpulse { animation: none; }
     .cachePop { transition: none; }
   }
-    return (
-    <main style={{ background: BG }}>
-      {/* desktop stuff */}
-    </main>
-  );
-}
+
+  /* ── Mobile-first responsive layer ─────────────────────────────────────
+     ≤768px the page stacks vertically: brand row, full-width search row,
+     control strips, table, end-cap. Density stays finviz-tight — gutters
+     shrink rather than grow — and the desktop header cluster hands off to
+     the hamburger menu (m/MobileScreener.jsx). !important is load-bearing
+     here: it is the only way a stylesheet rule outranks the inline
+     S-object styles. */
+  html, body { overflow-x: hidden; max-width: 100%; }
+  .tableWrap { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+
+  @media (max-width: 768px) {
+    .topbar { padding: 4px 10px !important; row-gap: 4px !important; }
+    /* Search leaves the absolute center for a full-width second line —
+       static flow, so it can never overlap the brand or push the page wide */
+    .centerUnit { position: static !important; transform: none !important; order: 3; flex: 1 1 100%; max-width: none !important; }
+    .searchWrapInner { flex: 1 1 auto; width: auto !important; min-width: 0 !important; }
+    .topMeta { display: none !important; } /* lives in the mobile menu */
+
+    /* Control strips: same dense rows, tighter gutters, selects stretch */
+    .filtersDeck, .lockedRow, .countStrip, .bulkStrip { padding-left: 10px !important; padding-right: 10px !important; gap: 8px !important; }
+    .filtersDeck select { flex: 1 1 130px; min-width: 0 !important; }
+    .countStrip select { flex: 1 1 130px; min-width: 0 !important; }
+    .sysRead { margin-left: 0 !important; flex: 1 1 100%; overflow-x: auto; }
+    .contest { padding: 8px 10px !important; gap: 8px !important; }
+    .contest > div:last-child { margin-left: 0 !important; }
+
+    /* Stack the 70/30 split. The detail pane is already a fixed right-hand
+       drawer at ≤900px, so only the table column remains in flow. */
+    .split { flex-direction: column; }
+
+    .endCap { padding: 12px 10px 4px !important; }
+    .siteFooter { padding: 12px 10px 32px !important; }
+    .bizBar { padding: 8px 10px !important; }
+    .bizInner { padding: 14px 10px 46px !important; }
+    .gateLeft { padding: 16px 14px 20px !important; }
+
+    /* Anchored popovers clamp to the viewport instead of overflowing it */
+    .upPop { left: 8px !important; right: 8px !important; width: auto !important; }
+
+    /* Fluid type: big headings scale down instead of wrapping awkwardly.
+       clamp() keeps them proportional between 320px and 768px viewports. */
+    h1, .infoH1 { font-size: clamp(17px, 5.2vw, 24px) !important; line-height: 1.25 !important; }
+    h2 { font-size: clamp(14px, 4.4vw, 18px) !important; }
+
+    /* The fixed social-proof dock would sit on top of table rows */
+    .viewersDock { display: none !important; }
+  }
+
+  /* Touch targets: 44x44 minimum on touch screens. min-* constraints clamp
+     the inline width/height pairs (22-30px icon buttons) without any layout
+     rewrite, and without inflating fine-pointer desktop layouts. */
+  @media (max-width: 768px), (pointer: coarse) {
+    .topbar button, .filtersDeck button, .filtersDeck select, .lockedRow button,
+    .countStrip button, .countStrip select, .lockedChip, .hoodChip, .locBtn,
+    .cityBtn, .themeBtn, .refreshBtn, .btnP, .btnO, .acctItem, .qItem,
+    .billBtn, .kbBind, .paneClose, .adminBtn, .simBtn, .hdrLink, .tierChipBtn,
+    .cancelBtn {
+      min-height: 44px; min-width: 44px;
+    }
+    /* Text fields and selects flex to their row; height is the tap target */
+    select, textarea, input:not([type="checkbox"]):not(.cbInput) { min-height: 44px; }
+
+    /* Rows are the tap target in the table: ~44px tall, still 12+ rows per
+       screen. Compact, not cramped. */
+    tbody tr.biz td, .skelRow td { padding-top: 13px !important; padding-bottom: 13px !important; }
+    td input[type="checkbox"], th input[type="checkbox"] { width: 22px; height: 22px; }
+
+    /* Inline targets grow their hit area, not their visual box */
+    .phoneSpan { padding: 12px 6px !important; margin: -12px -6px !important; }
+    .tagBtn, .leadMacro, .statEdit, .cacheTag { padding: 14px 6px !important; margin: -14px -6px !important; }
+    .footLink { display: inline-block; padding: 12px 4px; }
+
+    /* The 15px checkbox visual keeps its size; the invisible input that
+       takes the tap grows to 44px, centred on it */
+    .cbInput {
+      width: 44px !important; height: 44px !important;
+      left: 50% !important; top: 50% !important; right: auto !important; bottom: auto !important;
+      transform: translate(-50%, -50%);
+    }
+  }
 `;

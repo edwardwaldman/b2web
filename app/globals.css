@@ -24,3 +24,35 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ── Mobile-first foundation ──────────────────────────────────────────────
+   Horizontal scrolling is forbidden at the page level: wide content (the
+   data table) scrolls inside its own overflow-x container instead of
+   dragging the whole page sideways. */
+html,
+body {
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+img,
+svg,
+video,
+canvas,
+iframe {
+  max-width: 100%;
+}
+
+/* Fluid type: headings track the viewport so they scale down on phones
+   instead of wrapping awkwardly. Route-level styles may tighten further. */
+h1 {
+  font-size: clamp(1.25rem, 1rem + 2.5vw, 2rem);
+}
+h2 {
+  font-size: clamp(1.05rem, 0.9rem + 1.6vw, 1.5rem);
+}

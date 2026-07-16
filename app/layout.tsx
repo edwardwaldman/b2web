@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -18,6 +18,13 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "B2Web | Smart Lead Generation Screener",
   description: "Identify and qualify the best business leads instantly with AI-powered screening tools.",
+};
+
+// Emits <meta name="viewport" content="width=device-width, initial-scale=1">
+// into <head> for every route — the mobile-first foundation.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

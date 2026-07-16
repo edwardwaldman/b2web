@@ -1,6 +1,6 @@
 'use client';
 
-// components/MobileScreener.jsx — compact mobile navigation for the screener
+// m/MobileScreener.jsx — compact mobile navigation for the screener
 // ─────────────────────────────────────────────────────────────────────────────
 // The desktop header cluster (alerts, lists, About, Help, theme, auth) hands
 // off to this on small screens. A 44x44 hamburger sits inside the existing

@@ -1386,7 +1386,7 @@ function Screener() {
       {/* Top bar — the whole header. No hero, no tagline. */}
       <header className="topbar" style={S.topbar}>
         <div style={S.brandWrap}>
-          <button style={S.brandBtn} onClick={resetAll} title="Reset filters">
+          <button className="brandBtn" style={S.brandBtn} onClick={resetAll} title="Reset filters">
             <span style={{ color: TEXT, fontWeight: 700 }}>B2Web</span>
             <span style={{ color: RED, fontFamily: mono }}>.site</span>
           </button>
@@ -1543,7 +1543,7 @@ function Screener() {
         <div className="mobileNotice" role="note">
           <span>
             <strong style={{ color: TEXT }}>To unlock the full abilities of the screener, use B2Web on desktop.</strong>{" "}
-            Mobile shows a compact view: business, reviews, stars, and website status.
+            Mobile shows a compact view: business name and website status.
           </span>
           <button className="mobileNoticeX" onClick={() => setDeskNote(false)} aria-label="Dismiss notice">✕</button>
         </div>
@@ -1964,8 +1964,8 @@ function Screener() {
                     </th>
                   )}
                   <Th k="name" label="Business" sort={sort} onSort={toggleSort} style={{ width: "26%" }} />
-                  <Th k="rev" label="Reviews" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 64 }} />
-                  <Th k="rating" label="Stars" sort={sort} onSort={toggleSort} style={{ textAlign: "right", width: 60 }} />
+                  <Th k="rev" label="Reviews" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 64 }} />
+                  <Th k="rating" label="Stars" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 60 }} />
                   <Th k="listed" label="Listed" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 72 }} />
                   <Th k="addr" label="Address" sort={sort} onSort={toggleSort} className="mCol" style={{ width: "30%" }} />
                   <Th k="status" label="Website status" sort={sort} onSort={toggleSort} style={{ width: 124 }} />
@@ -2017,14 +2017,14 @@ function Screener() {
                           <button className="bizLink" style={S.bizNameBtn}
                             onClick={(e) => { e.stopPropagation(); selectRow(d); }}
                             title="Show details">{d.name}</button>
-                          <button className="tagBtn" style={S.tagBtn}
+                          <button className="tagBtn mCat" style={S.tagBtn}
                             onClick={(e) => { e.stopPropagation(); setCat(d.cat); }}
                             title={`Filter category: ${d.cat}`}>
                             {d.cat}
                           </button>
                         </td>
-                        <td style={{ ...S.td, textAlign: "right", color: d.rev === 0 ? FAINT : TEXT, fontFamily: mono }}>{d.rev}</td>
-                        <td style={{ ...S.td, textAlign: "right", fontFamily: mono }}>
+                        <td className="mCol" style={{ ...S.td, textAlign: "right", color: d.rev === 0 ? FAINT : TEXT, fontFamily: mono }}>{d.rev}</td>
+                        <td className="mCol" style={{ ...S.td, textAlign: "right", fontFamily: mono }}>
                           <span style={{ fontVariantNumeric: "tabular-nums", color: TEXT }}>{ratingOf(d).toFixed(1)}</span><span style={{ color: AMBER, marginLeft: 2 }}>★</span>
                         </td>
                         <td className="mCol" style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: d.listedAgoMin != null ? GREEN : MUTED }}>
@@ -3613,10 +3613,10 @@ const rlFmt = (sec) => (sec >= 60 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `$
 // production these states are real: the first paint waits on the cache read,
 // and every filter change is an index lookup, not an in-memory array filter.
 function SkeletonRows({ n = 12 }) {
-  // Per-column bar widths (%) mimic the real content rhythm. Columns 3, 4,
-  // 6, 7 (listed, address, viewing, phone) hide on mobile like the real ones.
+  // Per-column bar widths (%) mimic the real content rhythm. Every column
+  // except name (0) and website status (5) hides on mobile like the real ones.
   const cols = [[62, 34], [48], [40], [46], [70, 30], [58], [40], [72]];
-  const mHidden = new Set([3, 4, 6, 7]);
+  const mHidden = new Set([1, 2, 3, 4, 6, 7]);
   return (
     <>
       {Array.from({ length: n }).map((_, r) => (
@@ -4081,12 +4081,28 @@ const CSS = `
        The notice strip above points people there. */
     .lockedRow, .contest, .viewGroup { display: none !important; }
 
-    /* The table shows only business, reviews, stars, and website status,
-       so every row fits the viewport with no horizontal scrolling. The
-       rest (address, phone, listed, viewing) lives in the row's detail
-       pane, one tap away. */
-    .mCol { display: none !important; }
+    /* The table shows only the business name and website status, so every
+       row fits the viewport with no horizontal scrolling. The rest
+       (reviews, stars, address, phone, listed, viewing) lives in the
+       row's detail pane, one tap away. The category tag next to the name
+       (.mCat) goes too — it reads as clutter at phone width. */
+    .mCol, .mCat { display: none !important; }
     .tbl { min-width: 0 !important; }
+
+    /* Bigger type: with two columns there is room to read comfortably.
+       !important outranks the inline S-object sizes. */
+    .brandBtn { font-size: 22px !important; }
+    .tbl { font-size: 15px !important; }
+    .tbl th { font-size: 11.5px !important; }
+    tbody tr.biz td button, tbody tr.biz td span { font-size: 15px !important; }
+    .mobileNotice { font-size: 13px; }
+    .searchWrapInner input { font-size: 15px !important; }
+    .filtersDeck label, .countStrip label { font-size: 12.5px !important; }
+    .filtersDeck select, .countStrip select { font-size: 15px !important; }
+    .countStrip { font-size: 13.5px !important; }
+    .countStrip span { font-size: 13px !important; }
+    .locBtn { font-size: 13.5px !important; }
+    .cacheTag { font-size: 12.5px !important; }
 
     /* Admin QA dock: wrap instead of pushing the viewport wide, and keep
        clear of the home indicator. */

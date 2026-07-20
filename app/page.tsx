@@ -167,7 +167,6 @@ const EXTRA = [
 ];
 
 const ALL_ROWS = [...DATA, ...EXTRA];
-const CATS = ["All categories", ...Array.from(new Set(ALL_ROWS.map((d) => d.cat))).sort()];
 const REVIEW_STOPS = [0, 5, 10, 25, 50, 100];
 const STAR_STOPS = [0, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
 
@@ -274,7 +273,8 @@ function Caret({ dir }) {
 function statusBits(d) {
   const m = STATUS_META[d.status] || STATUS_META.site;
   const label = d.status === "third" ? `${d.thirdKind || "Social"} only` : m.label;
-  const tip = d.status === "third" ? (VERIFY[d.thirdKind] || VERIFY.Facebook) : VERIFY[d.status];
+  // Live rows carry their own provenance line (source + real check date).
+  const tip = d.statusNote || (d.status === "third" ? (VERIFY[d.thirdKind] || VERIFY.Facebook) : VERIFY[d.status]);
   return { c: m.c, label, tip };
 }
 
@@ -287,17 +287,24 @@ function Status({ d }) {
   );
 }
 
+// Live rows carry their real city ("Portland, OR"); the demo rows are SF.
+const cityOf = (d) => d.city || "San Francisco, CA";
 const mapHref = (d) =>
-  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${d.name} ${d.addr} San Francisco CA`)}`;
+  d.mapsUri || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${d.name} ${d.addr || ""} ${cityOf(d)}`)}`;
 const mapEmbed = (d) =>
-  `https://www.google.com/maps?q=${encodeURIComponent(`${d.addr}, San Francisco, CA`)}&output=embed`;
-// Web presence. Mock rows carry no real URLs, so this resolves to a scoped
-// Google search that lands on whatever the business actually has — their site,
-// their social page, or just the Google listing that proves there's no site.
-// Production stores the listed URL and opens it directly.
+  d.addr
+    ? `https://www.google.com/maps?q=${encodeURIComponent(`${d.name}, ${d.addr}, ${cityOf(d)}`)}&output=embed`
+    : d.lat != null && d.lon != null
+    ? `https://www.google.com/maps?q=${d.lat},${d.lon}&z=16&output=embed`
+    : `https://www.google.com/maps?q=${encodeURIComponent(`${d.name}, ${cityOf(d)}`)}&output=embed`;
+// Web presence. Live rows store the listed URL and open it directly; rows
+// without one resolve to a scoped Google search that lands on whatever the
+// business actually has — their site, their social page, or just the Google
+// listing that proves there's no site.
 const webHref = (d) => {
+  if (d.website) return /^https?:\/\//i.test(d.website) ? d.website : `https://${d.website}`;
   const plat = d.status === "third" && d.thirdKind ? ` ${d.thirdKind}` : "";
-  return `https://www.google.com/search?q=${encodeURIComponent(`"${d.name}" ${d.hood} San Francisco${plat}`)}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(`"${d.name}" ${d.hood} ${cityOf(d)}${plat}`)}`;
 };
 
 // Live viewer count per business (deterministic). Low numbers are the prize:
@@ -306,21 +313,35 @@ const viewersOf = (d) => 1 + (hashStr(d.name + "watch") % 48);
 
 const bizUrl = (d) => "https://b2web.site/business/" + d.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
-// ── Deterministic mock metrics (stable per business) ────────────────────────
+// ── Metrics: real fields first, deterministic mock as the demo fallback ─────
 const hashStr = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
-// Ratings span 1.0–5.0 but cluster in 3–5; only ~1 in 8 falls below 3.0.
+const THIS_YEAR = new Date().getFullYear();
+// Live rows carry d.rating from Google Places; null until enriched. Mock
+// ratings span 1.0–5.0 but cluster in 3–5; only ~1 in 8 falls below 3.0.
 const ratingOf = (d) => {
+  if (d.rating != null) return d.rating;
+  if (d.real) return null; // real business, rating not fetched yet
   const h = hashStr(d.name + "rt");
   if (h % 8 === 0) return Math.round((1 + (h % 20) / 10) * 10) / 10; // 1.0–2.9 (rare)
   return Math.round((3 + (h % 21) / 10) * 10) / 10;                  // 3.0–5.0 (common)
 };
-const ageOf = (d) => 2 + (hashStr(d.name + "age") % 28); // stable 2–29 yrs listed
+const ratingLabel = (d) => { const r = ratingOf(d); return r == null ? "—" : r.toFixed(1); };
+// Age: registry / OSM start_date year when a source has it; mock otherwise.
+const ageOf = (d) => {
+  if (d.sinceYear) return Math.max(0, THIS_YEAR - d.sinceYear);
+  if (d.real) return null; // no registry match yet
+  return 2 + (hashStr(d.name + "age") % 28); // stable 2–29 yrs listed
+};
+const sinceYearOf = (d) => d.sinceYear || (ageOf(d) != null ? THIS_YEAR - ageOf(d) : null);
 // Ready-to-paste build prompt (Lovable, v0, Bolt) written from the row's data.
 const aiPromptOf = (d) => {
   const presence = d.status === "none" ? "They currently have no website at all"
     : d.status === "third" ? `Their only web presence is a ${d.thirdKind} page`
     : "They have a standalone site that needs a rebuild";
-  return `Build a fast, mobile-first, single-page website for ${d.name}, a ${d.cat.toLowerCase()} in ${d.hood}, San Francisco (${d.addr}). ${presence}. They hold a ${ratingOf(d).toFixed(1)} star Google rating across ${d.rev} reviews, so lead with social proof: a reviews strip, a star badge, and two short testimonials. Sections: hero with a one-line value promise and a tap-to-call button (${d.phone}), services with prices, hours and location with an embedded map, and a booking or quote form. Tone: neighborhood-trusted, no stock-photo gloss. Ship clean semantic HTML, system fonts, one accent color, and LocalBusiness structured data for SEO.`;
+  const proof = ratingOf(d) != null && d.rev
+    ? `They hold a ${ratingOf(d).toFixed(1)} star Google rating across ${d.rev} reviews, so lead with social proof: a reviews strip, a star badge, and two short testimonials.`
+    : `Lead with whatever social proof they have: a reviews strip and two short testimonials.`;
+  return `Build a fast, mobile-first, single-page website for ${d.name}, a ${d.cat.toLowerCase()} in ${d.hood}, ${cityOf(d)}${d.addr ? ` (${d.addr})` : ""}. ${presence}. ${proof} Sections: hero with a one-line value promise and a tap-to-call button${d.phone ? ` (${d.phone})` : ""}, services with prices, hours and location with an embedded map, and a booking or quote form. Tone: neighborhood-trusted, no stock-photo gloss. Ship clean semantic HTML, system fonts, one accent color, and LocalBusiness structured data for SEO.`;
 };
 
 // ── Geo: neighborhood lat/lng + haversine + nearest-city table ──────────────
@@ -339,6 +360,7 @@ const HOOD_LL = {
   "Silver Terrace": [37.7368, -122.3993],
 };
 const llOf = (d) => {
+  if (d.lat != null && d.lon != null) return [d.lat, d.lon]; // real coordinates
   const b = HOOD_LL[d.hood] || [37.7749, -122.4194];
   return [b[0] + ((hashStr(d.name + "la") % 100) / 100 - 0.5) * 0.006,
           b[1] + ((hashStr(d.name + "lo") % 100) / 100 - 0.5) * 0.006];
@@ -397,13 +419,22 @@ const genRow = (i) => {
 const GEN_MAX = 5000; // safety ceiling so the table doesn't lock the browser
 
 // ── "Listed" recency metric ─────────────────────────────────────────────────
-// Deterministic days-ago per business (1d–2y spread, hash-stable). Rows
+// Live rows carry listedDays (days since their OSM record was last touched);
+// mock rows fall back to a deterministic hash-stable 1d–2y spread. Rows
 // injected by Refresh carry listedAgoMin (minutes) and render green.
-const listedMin = (d) =>
-  d.listedAgoMin != null ? d.listedAgoMin : (1 + (hashStr(d.name + "listed") % 720)) * 1440;
+const listedDaysOf = (d) =>
+  d.listedDays != null ? Math.max(1, d.listedDays)
+  : d.real ? null // Google-only row: no edit history to date it by
+  : 1 + (hashStr(d.name + "listed") % 720);
+const listedMin = (d) => {
+  if (d.listedAgoMin != null) return d.listedAgoMin;
+  const days = listedDaysOf(d);
+  return days == null ? Number.MAX_SAFE_INTEGER : days * 1440;
+};
 const listedLabel = (d) => {
   if (d.listedAgoMin != null) return d.listedAgoMin < 60 ? `${d.listedAgoMin}m ago` : `${Math.round(d.listedAgoMin / 60)}h ago`;
-  const days = 1 + (hashStr(d.name + "listed") % 720);
+  const days = listedDaysOf(d);
+  if (days == null) return "—";
   if (days < 14) return `${days}d ago`;
   if (days < 60) return `${Math.round(days / 7)}w ago`;
   if (days < 365) return `${Math.round(days / 30)}mo ago`;
@@ -420,6 +451,12 @@ const RV_MID = ["and the staff were friendly and quick", "and the service was so
 const RV_END = ["Highly recommend.", "Will be back.", "Can't beat it.", "Five stars.", "Tell your friends.", "Worth the trip.", "No complaints.", "Exactly what I needed."];
 const RV_LOW = ["Service was slow and a bit disorganized.", "Fine, but nothing special for the price.", "Had to wait way past my appointment time.", "Decent work but the communication was poor.", "Wanted to love it, left underwhelmed."];
 const reviewsOf = (d) => {
+  if (d.real) {
+    // Real rows only ever show real review text (fetched by /api/enrich when
+    // the row is opened; needs a Places key). Never synthesize for them.
+    const list = d.reviews || [];
+    return { total: d.rev != null ? d.rev : list.length, sampled: list.length, list };
+  }
   const total = Math.max(1, d.rev);
   const n = Math.min(total, 12); // sample the most recent dozen
   const rating = ratingOf(d);
@@ -439,7 +476,8 @@ const reviewsOf = (d) => {
 };
 const reviewsText = (d) => {
   const { total, sampled, list } = reviewsOf(d);
-  const head = `${d.name}, ${d.addr}, San Francisco, CA\nGoogle reviews: ${ratingOf(d).toFixed(1)}★, ${total} total (showing ${sampled} most recent)\n${"=".repeat(48)}\n`;
+  const head = `${d.name}, ${[d.addr, cityOf(d)].filter(Boolean).join(", ")}\nGoogle reviews: ${ratingLabel(d)}★, ${total} total (showing ${sampled} most recent)\n${"=".repeat(48)}\n`;
+  if (!list.length) return head + `No review text cached yet. Latest reviews: ${mapHref(d)}`;
   return head + list.map((r) => `${r.author}, ${"★".repeat(r.stars)}${"☆".repeat(5 - r.stars)}, ${r.when}\n${r.body}`).join("\n\n");
 };
 
@@ -570,6 +608,14 @@ function Screener() {
   const [locating, setLocating] = useState(false);
   const [geoMsg, setGeoMsg] = useState(null);
 
+  // Live data: real businesses for a real location, served by /api/businesses
+  // (OpenStreetMap Overpass, plus Google Places when a key is configured).
+  // null = fetch not landed yet (or failed) -> the mock demo cache renders.
+  const [live, setLive] = useState(null); // {rows, city, lat, lng, checkedAt, source, count, googleEnriched}
+  const liveReq = useRef(0);              // request generation, drops stale responses
+  const enrichBusy = useRef(new Set());   // per-business enrich in flight
+  const [pendingCoords, setPendingCoords] = useState(null); // detected coords awaiting signup
+
   // admin QA switch (bottom-right): makes the paid gates functional
   const [admin, setAdmin] = useState(() => {
     try { return localStorage.getItem("b2w-admin") === "1"; } catch {}
@@ -682,6 +728,7 @@ function Screener() {
     try { localStorage.setItem("b2w-theme", theme); } catch {}
   }, [theme]);
 
+  const liveRows = live ? live.rows : null;
   const pool = useMemo(() => {
     let base;
     if (admin && adminRows != null) {
@@ -691,11 +738,20 @@ function Screener() {
         const gen = []; for (let i = 0; i < n - ALL_ROWS.length; i++) gen.push(genRow(i));
         base = ALL_ROWS.concat(gen);
       }
+    } else if (liveRows && liveRows.length) {
+      // Real crawled businesses. The anonymous free slice stays capped like
+      // the demo (20 rows, 40 after the rewarded ad); paid/admin get it all.
+      base = admin || isPaid ? liveRows : liveRows.slice(0, extra ? 40 : 20);
     } else {
       base = admin || extra ? ALL_ROWS : DATA; // admin (no target): full mock cache
     }
     return fresh.length ? [...fresh, ...base] : base;
-  }, [admin, adminRows, extra, fresh]);
+  }, [admin, adminRows, extra, fresh, liveRows, isPaid]);
+
+  // Category options track whatever is actually in the pool.
+  const catOpts = useMemo(
+    () => ["All categories", ...Array.from(new Set(pool.map((d) => d.cat))).sort()],
+    [pool]);
 
   // "While you were away": newly listed no-website businesses you have not
   // opened yet. Deterministic so the badge count is stable across renders.
@@ -713,8 +769,8 @@ function Screener() {
     let r = pool.filter((d) => {
       if (admin && multiCatOn && cats.size) { if (!cats.has(d.cat)) return false; }
       else if (cat !== "All categories" && d.cat !== cat) return false;
-      if (minRev && d.rev < minRev) return false;
-      if (minStars && ratingOf(d) < minStars) return false;
+      if (minRev && (d.rev ?? 0) < minRev) return false;
+      if (minStars && (ratingOf(d) ?? 0) < minStars) return false;
       if (hood && d.hood !== hood) return false;
       if (onlyLeads && d.status !== "none") return false;
       if (admin && excludeContacted && contacted.has(d.name)) return false;
@@ -728,8 +784,8 @@ function Screener() {
     const ord = (d) => STATUS_META[d.status].order;
     r = [...r].sort((a, b) => {
       let v = 0;
-      if (sort.key === "rev") v = a.rev - b.rev;
-      else if (sort.key === "rating") v = ratingOf(a) - ratingOf(b);
+      if (sort.key === "rev") v = (a.rev ?? -1) - (b.rev ?? -1);
+      else if (sort.key === "rating") v = (ratingOf(a) ?? -1) - (ratingOf(b) ?? -1);
       else if (sort.key === "name") v = a.name.localeCompare(b.name);
       else if (sort.key === "addr") v = a.addr.localeCompare(b.addr);
       else if (sort.key === "status") v = ord(a) - ord(b);
@@ -760,7 +816,18 @@ function Screener() {
 
   const fmt = (n) => n.toLocaleString("en-US");
 
+  // Cache provenance labels, real when live data is up.
+  const agoLabel = (iso) => {
+    const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+    return m < 1 ? "just now" : m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`;
+  };
+  const snapLabel = live
+    ? new Date(live.checkedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+    : "Jun 5";
+  const cityTag = (live ? live.city : locCity).split(",")[0].trim();
+
   const copyPhone = (d) => {
+    if (!d.phone) return; // live row without a listed phone
     if (navigator.clipboard) navigator.clipboard.writeText(d.phone).catch(() => {});
     setCopiedName(d.name);
     setTimeout(() => setCopiedName(null), 850);
@@ -784,9 +851,10 @@ function Screener() {
     setPane({ mode: "business" });
     setCopiedRev(false);
     markViewed(d.name);
+    enrichBiz(d); // live rows: pull rating, reviews, registry year, URL check
   };
   // Search opens the dedicated page, not the side pane.
-  const openBizPage = (d) => { setBizPage(d); setPane({ mode: null }); setCopiedRev(false); setCopiedPrompt(false); setPageAdMode("ad"); markViewed(d.name); };
+  const openBizPage = (d) => { setBizPage(d); setPane({ mode: null }); setCopiedRev(false); setCopiedPrompt(false); setPageAdMode("ad"); markViewed(d.name); enrichBiz(d); };
 
   const rowClick = (e, d) => {
     if (e.shiftKey) {
@@ -853,23 +921,129 @@ function Screener() {
 
   const flashGeo = (m) => { setGeoMsg(m); setTimeout(() => setGeoMsg(null), 3200); };
 
-  // Locate: geolocate -> nearest city -> nearest-first sort. Nearest-first is
-  // free (pure client-side, zero marginal cost). Switching the cache to a
-  // non-SF city is the paid gate, unless admin mode is on.
-  // We never prompt the browser for coordinates. The request goes to our
-  // servers, which resolve an approximate city from the connection. The mock
-  // resolves to the person's nearest city after a short round trip.
+  // Pull the real business cache for a location. Resolves the city label via
+  // /api/geocode when the caller doesn't have one, then crawls with
+  // /api/businesses. On failure the mock demo cache stays up.
+  const loadLive = async (lat, lng, cityLabel, opts = {}) => {
+    const reqId = ++liveReq.current;
+    setBusy("loading");
+    try {
+      let label = cityLabel;
+      if (!label) {
+        try {
+          const g = await fetch(`/api/geocode?lat=${lat}&lon=${lng}`).then((r) => r.json());
+          if (g && g.ok && g.label) label = g.label;
+        } catch {}
+      }
+      const qs = `lat=${lat}&lon=${lng}&radius=${opts.radiusM || 4000}` +
+        `&city=${encodeURIComponent(label || "")}` + (opts.fresh ? "&fresh=1" : "");
+      const r = await fetch(`/api/businesses?${qs}`);
+      const j = await r.json();
+      if (reqId !== liveReq.current) return null; // superseded by a newer request
+      if (!j || !j.ok) throw new Error((j && j.error) || `HTTP ${r.status}`);
+      setLive((prev) => {
+        let rows = j.rows;
+        if (opts.fresh && prev && prev.rows.length) {
+          // A re-crawl: anything we have not seen before is "just listed".
+          const known = new Set(prev.rows.map((x) => x.id));
+          rows = rows.map((x) => (known.has(x.id) ? x : { ...x, listedAgoMin: 1 }));
+        }
+        return {
+          rows, city: label || (prev && prev.city) || "your area",
+          lat, lng, checkedAt: j.checkedAt, source: j.source,
+          count: j.count, googleEnriched: j.googleEnriched,
+        };
+      });
+      return j;
+    } catch {
+      if (reqId === liveReq.current) flashGeo("Live crawl unreachable right now. Showing the demo cache.");
+      return null;
+    } finally {
+      if (reqId === liveReq.current) { setBusy("idle"); firstPaint.current = false; }
+    }
+  };
+
+  // Per-business enrichment, fired when a row is opened: Google rating +
+  // review text, registry year, and a live check of the listed URL. Whatever
+  // comes back is merged into the row in place.
+  const enrichBiz = (d) => {
+    if (!d || !d.real || d.enriched || enrichBusy.current.has(d.id)) return;
+    enrichBusy.current.add(d.id);
+    const qs = new URLSearchParams({
+      name: d.name,
+      city: d.city || "",
+      state: ((d.city || "").split(",")[1] || "").trim(),
+      website: d.website || "",
+    });
+    if (d.lat != null && d.lon != null) { qs.set("lat", String(d.lat)); qs.set("lon", String(d.lon)); }
+    fetch(`/api/enrich?${qs.toString()}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (!j || !j.ok) return;
+        const patch = (x) => {
+          if (x.id !== d.id) return x;
+          const n = { ...x, enriched: true };
+          if (j.rating != null) n.rating = j.rating;
+          if (j.rev != null) n.rev = j.rev;
+          if (j.reviews && j.reviews.length) n.reviews = j.reviews;
+          if (j.website && !n.website) n.website = j.website;
+          if (j.phone && !n.phone) n.phone = j.phone;
+          if (j.mapsUri) n.mapsUri = j.mapsUri;
+          if (j.sinceYear != null) n.sinceYear = j.sinceYear;
+          if (j.statusPatch) {
+            n.status = j.statusPatch.status;
+            if (j.statusPatch.thirdKind) n.thirdKind = j.statusPatch.thirdKind; else delete n.thirdKind;
+            n.statusNote = j.statusPatch.statusNote;
+          }
+          n.sources = Array.from(new Set([...(x.sources || []), ...(j.sources || [])]));
+          return n;
+        };
+        setLive((prev) => (prev ? { ...prev, rows: prev.rows.map(patch) } : prev));
+        setBizPage((bp) => (bp && bp.id === d.id ? patch(bp) : bp));
+      })
+      .catch(() => {})
+      .finally(() => enrichBusy.current.delete(d.id));
+  };
+
+  // Locate: real browser geolocation -> reverse geocode -> real business
+  // crawl for that spot, plus the nearest-first sort. The nearest-city table
+  // is only the label fallback when the geocoder is unreachable. Switching
+  // the cache to a non-SF city stays the signup gate for anonymous visitors.
   const locate = () => {
     if (locating) return;
+    const fail = (msg) => { setLocating(false); flashGeo(msg); };
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      flashGeo("This browser cannot share a location."); return;
+    }
     setLocating(true);
-    setTimeout(() => {
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const lat = pos.coords.latitude, lng = pos.coords.longitude;
+      let label = null;
+      try {
+        const g = await fetch(`/api/geocode?lat=${lat}&lon=${lng}`).then((r) => r.json());
+        if (g && g.ok && g.label) label = g.label;
+      } catch {}
+      if (!label) {
+        let best = CITIES[0], bd = Infinity;
+        for (const c of CITIES) { const dd = hav(lat, lng, c.lat, c.lng); if (dd < bd) { bd = dd; best = c; } }
+        label = best.n;
+      }
       setLocating(false);
-      const best = CITIES.find((c) => c.n === "Boston, MA") || CITIES[0];
-      setGeo({ lat: best.lat, lng: best.lng, city: best.n });
+      setGeo({ lat, lng, city: label });
       setSort({ key: "dist", dir: "asc" });
-      if (best.n === "San Francisco, CA" || admin || authed) setLocCity(best.n);
-      else { setPendingCity(best.n); goToLogin(); }
-    }, 700);
+      if (admin || authed || label.startsWith("San Francisco")) {
+        setLocCity(label);
+        loadLive(lat, lng, label);
+      } else {
+        setPendingCity(label);
+        setPendingCoords({ lat, lng });
+        goToLogin();
+      }
+    }, (err) => {
+      fail(err && err.code === 1
+        ? "Location permission denied. Allow access and try again."
+        : "Could not detect your location. Try again.");
+    }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
   };
 
   // Refresh (admin / paid): pull "just listed" businesses into the cache. A
@@ -883,6 +1057,15 @@ function Screener() {
     setRefreshLock(rlRetryIn("refresh"));
     setRefreshing(true);
     setBusy("loading");
+    if (live) {
+      // Real mode: re-crawl the area now; anything new floats to the top as
+      // "just listed" (loadLive marks unseen rows with listedAgoMin).
+      loadLive(live.lat, live.lng, live.city, { fresh: true }).then((j) => {
+        setRefreshing(false);
+        if (j) setSort({ key: "listed", dir: "asc" });
+      });
+      return;
+    }
     setTimeout(() => {
       const batch = 2 + (freshCount.current % 3);
       const add = [];
@@ -900,7 +1083,7 @@ function Screener() {
     const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
     const head = ["Name", "Category", "Reviews", "Stars", "Address", "Neighborhood", "Website status", "Phone"];
     const lines = [head.join(",")].concat(list.map((d) =>
-      [d.name, d.cat, d.rev, ratingOf(d).toFixed(1), `${d.addr}, San Francisco, CA`, d.hood, statusBits(d).label, d.phone].map(esc).join(",")));
+      [d.name, d.cat, d.rev ?? "", ratingLabel(d), [d.addr, cityOf(d)].filter(Boolean).join(", "), d.hood, statusBits(d).label, d.phone || ""].map(esc).join(",")));
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -925,7 +1108,8 @@ function Screener() {
   // rotating through the cache (nearest first once located).
   useEffect(() => {
     if (!(admin && alertOn)) { setAlertToast(null); return; }
-    const cand = ALL_ROWS.filter((d) => d.status === "none");
+    const cand = (liveRows && liveRows.length ? liveRows : ALL_ROWS).filter((d) => d.status === "none");
+    if (!cand.length) { setAlertToast(null); return; }
     if (geo) cand.sort((a, b) => hav(geo.lat, geo.lng, ...llOf(a)) - hav(geo.lat, geo.lng, ...llOf(b)));
     const fire = () => {
       const biz = cand[alertIdx.current % cand.length];
@@ -935,7 +1119,7 @@ function Screener() {
     const t0 = setTimeout(fire, 1200);
     const iv = setInterval(fire, 18000);
     return () => { clearTimeout(t0); clearInterval(iv); };
-  }, [admin, alertOn, geo]);
+  }, [admin, alertOn, geo, liveRows]);
 
   // Each toast auto-dismisses; it is a preview, not a modal.
   useEffect(() => {
@@ -960,8 +1144,13 @@ function Screener() {
     setWall(false);
     setAcctMenu(false);
     setAuthPw(""); setAuthCode(""); setAuthErr("");
-    if (pendingCity) { setLocCity(pendingCity); setPendingCity(null); }
-    if (pendingLoc) { setPendingLoc(false); locate(); flashGeo("Cache is coming to your area. We are building a 40 mile radius around you and will notify you when it is ready."); } // finish the detect flow
+    if (pendingCity) {
+      setLocCity(pendingCity);
+      // Detection ran before signup: load the real cache for those coords now.
+      if (pendingCoords) { loadLive(pendingCoords.lat, pendingCoords.lng, pendingCity); setPendingCoords(null); }
+      setPendingCity(null);
+    }
+    if (pendingLoc) { setPendingLoc(false); locate(); flashGeo("Detecting your location and crawling the businesses around you."); } // finish the detect flow
     if (pendingPlan) { const pl = pendingPlan; setPendingPlan(null); setTier(pl); window.open("https://checkout.stripe.com", "_blank", "noopener"); }
   };
   const doLogOut = async () => {
@@ -1120,10 +1309,14 @@ function Screener() {
     setAuthLock(Math.max(rlRetryIn("auth"), rlRetryIn("code")));
   }, []);
 
-  // Initial cache fetch when the page opens.
+  // Initial cache fetch when the page opens: the real SF slice by default
+  // (Locate swaps in the visitor's own area). If the crawl fails, the demo
+  // rows stay up and the timeout below still clears the skeleton.
   useEffect(() => {
-    const t = setTimeout(() => { setBusy("idle"); firstPaint.current = false; }, 820);
+    loadLive(37.7749, -122.4194, "San Francisco, CA");
+    const t = setTimeout(() => { setBusy((b) => (b === "loading" ? "idle" : b)); firstPaint.current = false; }, 15000);
     return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Re-index whenever the filter or sort inputs change (skip the first paint,
@@ -1562,7 +1755,8 @@ function Screener() {
               }
               setCat(v);
             }}>
-            {CATS.map((c) => <option key={c}>{c}</option>)}
+            {catOpts.map((c) => <option key={c}>{c}</option>)}
+            {!catOpts.includes(cat) && <option key={cat}>{cat}</option>}
           </select>
           {admin && multiCatOn && [...cats].map((c) => (
             <button key={c} className="hoodChip" style={S.hoodChip}
@@ -1879,7 +2073,10 @@ function Screener() {
               if (admin) { setRtOn(!rtOn); return; }
               openUnlimited(e.currentTarget, { title: "Real-time data", body: FEATURES["Real-time data"] });
             }}>
-            {admin && rtOn ? "SF live, real-time" : admin && fresh.length ? "SF cache, updated just now" : <>SF cache, updated 6d ago {showLocks && <Lock />}</>}
+            {admin && rtOn ? `${cityTag} live, real-time`
+              : admin && fresh.length ? `${cityTag} cache, updated just now`
+              : live ? <>{cityTag} live ({live.source.includes("Google") ? "OSM + Google" : "OSM"}), checked {agoLabel(live.checkedAt)} {showLocks && <Lock />}</>
+              : <>SF cache, updated 6d ago {showLocks && <Lock />}</>}
           </button>
           {!admin && (
           <span id="rt-pop" className="cachePop" style={S.cachePop} role="tooltip">
@@ -2023,15 +2220,17 @@ function Screener() {
                             {d.cat}
                           </button>
                         </td>
-                        <td className="mCol" style={{ ...S.td, textAlign: "right", color: d.rev === 0 ? FAINT : TEXT, fontFamily: mono }}>{d.rev}</td>
+                        <td className="mCol" style={{ ...S.td, textAlign: "right", color: d.rev ? TEXT : FAINT, fontFamily: mono }}>{d.rev ?? "—"}</td>
                         <td className="mCol" style={{ ...S.td, textAlign: "right", fontFamily: mono }}>
-                          <span style={{ fontVariantNumeric: "tabular-nums", color: TEXT }}>{ratingOf(d).toFixed(1)}</span><span style={{ color: AMBER, marginLeft: 2 }}>★</span>
+                          {ratingOf(d) == null
+                            ? <span style={{ color: FAINT }}>—</span>
+                            : <><span style={{ fontVariantNumeric: "tabular-nums", color: TEXT }}>{ratingOf(d).toFixed(1)}</span><span style={{ color: AMBER, marginLeft: 2 }}>★</span></>}
                         </td>
                         <td className="mCol" style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: d.listedAgoMin != null ? GREEN : MUTED }}>
                           {listedLabel(d)}
                         </td>
                         <td className="mCol" style={S.td}>
-                          <span style={{ color: TEXT }}>{d.addr}</span>
+                          <span style={{ color: d.addr ? TEXT : FAINT }}>{d.addr || "—"}</span>
                           <span style={{ marginLeft: 8, fontSize: 10, color: MUTED }}>{d.hood}</span>
                           {geo && (
                             <span style={{ marginLeft: 8, fontSize: 10, color: FAINT, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>
@@ -2045,11 +2244,13 @@ function Screener() {
                           {viewersOf(d)}
                         </td>
                         <td className="mCol" style={S.td}>
-                          <span className={copiedName === d.name ? "phoneHit" : ""} style={S.phoneSpan}
-                            onClick={(e) => { e.stopPropagation(); copyPhone(d); }}
-                            title="Click to copy">
-                            {d.phone}
-                          </span>
+                          {d.phone ? (
+                            <span className={copiedName === d.name ? "phoneHit" : ""} style={S.phoneSpan}
+                              onClick={(e) => { e.stopPropagation(); copyPhone(d); }}
+                              title="Click to copy">
+                              {d.phone}
+                            </span>
+                          ) : <span style={{ color: FAINT }}>—</span>}
                         </td>
                       </tr>
                       {/* In-feed slot: the free tier cannot remove it. Cancel
@@ -2136,15 +2337,17 @@ function Screener() {
                           <VulnFlags d={selBiz} />
                         </div>
                         <div style={S.kvGrid}>
-                          <span style={S.kvK}>Reviews</span><span style={{ ...S.kvV, fontFamily: mono }}>{selBiz.rev}</span>
-                          <span style={S.kvK}>Rating</span><span style={{ ...S.kvV, fontFamily: mono }}>{ratingOf(selBiz).toFixed(1)}★</span>
-                          <span style={S.kvK}>Address</span><span style={S.kvV}>{selBiz.addr}</span>
+                          <span style={S.kvK}>Reviews</span><span style={{ ...S.kvV, fontFamily: mono }}>{selBiz.rev ?? "—"}</span>
+                          <span style={S.kvK}>Rating</span><span style={{ ...S.kvV, fontFamily: mono }}>{ratingLabel(selBiz)}★</span>
+                          <span style={S.kvK}>Address</span><span style={S.kvV}>{selBiz.addr || "—"}</span>
                           <span style={S.kvK}>Phone</span>
                           <span style={S.kvV}>
-                            <span className={copiedName === selBiz.name ? "phoneHit" : ""} style={S.phoneSpan}
-                              onClick={() => copyPhone(selBiz)} title="Click to copy">
-                              {copiedName === selBiz.name ? "[COPIED]" : selBiz.phone}
-                            </span>
+                            {selBiz.phone ? (
+                              <span className={copiedName === selBiz.name ? "phoneHit" : ""} style={S.phoneSpan}
+                                onClick={() => copyPhone(selBiz)} title="Click to copy">
+                                {copiedName === selBiz.name ? "[COPIED]" : selBiz.phone}
+                              </span>
+                            ) : <span style={{ color: FAINT }}>—</span>}
                           </span>
                         </div>
                         <div style={S.mapBox}><iframe title={`Map: ${selBiz.addr}`} src={mapEmbed(selBiz)} style={S.mapFrame} loading="lazy" /></div>
@@ -2204,11 +2407,11 @@ function Screener() {
               No more businesses without a website?
             </div>
             <div style={{ fontSize: 11.5, color: MUTED, marginBottom: 12, maxWidth: 460, lineHeight: 1.55 }}>
-              Get the real-time cache to edge out competitors working the same Jun 5 snapshot.
+              Get the real-time cache to edge out competitors working the same {snapLabel} snapshot.
             </div>
             <div style={{ ...S.edgeCompare, maxWidth: 460 }}>
               <span style={{ color: MUTED, fontWeight: 700 }}>FREE</span>
-              <span style={{ color: MUTED }}>Same Jun 5 rows for every visitor, picked over daily</span>
+              <span style={{ color: MUTED }}>Same {snapLabel} rows for every visitor, picked over daily</span>
               <span style={{ color: GREEN, fontWeight: 700 }}>PAID</span>
               <span style={{ color: TEXT }}>Private crawl on demand, leads before they reach the cache</span>
             </div>
@@ -2227,13 +2430,13 @@ function Screener() {
             <div style={{ fontSize: 10, color: FAINT, marginTop: 10 }}>
               {admin && rtOn
                 ? "Real-time crawl mode is on (admin mock)."
-                : "Results are a delayed cache, snapshotted Jun 5. Real-time data is paid."}
+                : `Results are a delayed cache, snapshotted ${snapLabel}. Real-time data is paid.`}
             </div>
           </div>
           )}
 
           <footer className="siteFooter" style={S.footer}>
-            <span>b2web.site. Anonymous view shows the San Francisco cache only.</span>
+            <span>b2web.site. Anonymous view shows the {cityTag} cache only.</span>
             <SiteFooter onHelp={() => setInfoPage("help")} />
           </footer>
         </main>
@@ -2288,15 +2491,17 @@ function Screener() {
                           title="Filter the list by this neighborhood">{selBiz.hood}</button>
                       </span>
                       <span style={S.kvK}>Reviews</span>
-                      <span style={{ ...S.kvV, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>{selBiz.rev}</span>
+                      <span style={{ ...S.kvV, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>{selBiz.rev ?? "—"}</span>
                       <span style={S.kvK}>Rating</span>
-                      <span style={{ ...S.kvV, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>{ratingOf(selBiz).toFixed(1)} <span style={{ color: AMBER }}>★</span></span>
+                      <span style={{ ...S.kvV, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>{ratingLabel(selBiz)} <span style={{ color: AMBER }}>★</span></span>
                       <span style={S.kvK}>Business age</span>
-                      <span style={S.kvV}>{ageOf(selBiz)} yrs <span style={{ color: MUTED }}>(listed since {2026 - ageOf(selBiz)})</span></span>
+                      <span style={S.kvV}>{ageOf(selBiz) != null
+                        ? <>{ageOf(selBiz)} yrs <span style={{ color: MUTED }}>(listed since {sinceYearOf(selBiz)})</span></>
+                        : <span style={{ color: FAINT }}>no registry match yet</span>}</span>
                       <span style={S.kvK}>Cache entry</span>
                       <span style={{ ...S.kvV, fontFamily: mono, color: selBiz.listedAgoMin != null ? GREEN : TEXT }}>Listed {listedLabel(selBiz)}</span>
                       <span style={S.kvK}>Address</span>
-                      <span style={S.kvV}>{selBiz.addr}, San Francisco, CA</span>
+                      <span style={S.kvV}>{[selBiz.addr, cityOf(selBiz)].filter(Boolean).join(", ")}</span>
                       {geo && (
                         <>
                           <span style={S.kvK}>Distance</span>
@@ -2305,14 +2510,16 @@ function Screener() {
                       )}
                       <span style={S.kvK}>Phone</span>
                       <span style={{ ...S.kvV }}>
-                        <span className={copiedName === selBiz.name ? "phoneHit" : ""}
-                          style={{ ...S.phoneSpan, ...(copiedName === selBiz.name ? { color: GREEN, fontWeight: 700, letterSpacing: "0.5px" } : null) }}
-                          onClick={() => copyPhone(selBiz)} title="Click to copy">
-                          {copiedName === selBiz.name ? "[COPIED]" : selBiz.phone}
-                        </span>
+                        {selBiz.phone ? (
+                          <span className={copiedName === selBiz.name ? "phoneHit" : ""}
+                            style={{ ...S.phoneSpan, ...(copiedName === selBiz.name ? { color: GREEN, fontWeight: 700, letterSpacing: "0.5px" } : null) }}
+                            onClick={() => copyPhone(selBiz)} title="Click to copy">
+                            {copiedName === selBiz.name ? "[COPIED]" : selBiz.phone}
+                          </span>
+                        ) : <span style={{ color: FAINT }}>not listed</span>}
                       </span>
                       <span style={S.kvK}>Source</span>
-                      <span style={{ ...S.kvV, color: MUTED }}>Google listing, OSM, registry</span>
+                      <span style={{ ...S.kvV, color: MUTED }}>{(selBiz.sources && selBiz.sources.join(", ")) || "Google listing, OSM, registry"}</span>
                     </div>
 
                     <div style={S.mapBox}>
@@ -2330,7 +2537,7 @@ function Screener() {
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                         <span style={S.fLabel}>Google reviews</span>
                         <span style={{ fontSize: 9.5, color: FAINT, fontFamily: mono }}>
-                          {reviewsOf(selBiz).total} total, {reviewsOf(selBiz).sampled} sampled
+                          {reviewsOf(selBiz).total ?? "?"} total, {reviewsOf(selBiz).sampled} sampled
                         </span>
                       </div>
                       <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 6, justifyContent: "center", ...(copiedRev ? { background: GREEN, borderColor: GREEN } : null) }}
@@ -2812,7 +3019,7 @@ function Screener() {
                     {", "}
                     <button className="kvLink" style={S.kvLink} onClick={() => { setBizPage(null); setHood(d.hood); }}>{d.hood}</button>
                   </div>
-                  <div style={{ fontSize: 12, color: MUTED, marginTop: 7 }}>{d.addr}, San Francisco, CA</div>
+                  <div style={{ fontSize: 12, color: MUTED, marginTop: 7 }}>{[d.addr, cityOf(d)].filter(Boolean).join(", ")}</div>
                 </div>
                 <div style={{ ...S.bizSec, minWidth: 220, maxWidth: 300, borderColor: d.status === "none" ? RED : d.status === "third" ? AMBER : LINE }}>
                   <div style={S.bizSecT}>Website status</div>
@@ -2822,10 +3029,10 @@ function Screener() {
               </div>
 
               <div style={S.bizMetrics}>
-                {[["Google rating", `${ratingOf(d).toFixed(1)}★`, `top ${Math.max(2, 40 - Math.round((ratingOf(d) - 3.4) * 22))}% locally`],
-                  ["Reviews", d.rev, d.rev > 150 ? "high demand" : d.rev > 60 ? "steady traffic" : "emerging"],
-                  ["Years listed", ageOf(d), `since ${2026 - ageOf(d)}`],
-                  ["In cache", listedLabel(d), d.listedAgoMin != null ? "just crawled" : "Jun 5 snapshot"],
+                {[["Google rating", ratingOf(d) != null ? `${ratingOf(d).toFixed(1)}★` : "—", ratingOf(d) != null ? `top ${Math.max(2, 40 - Math.round((ratingOf(d) - 3.4) * 22))}% locally` : "no rating data yet"],
+                  ["Reviews", d.rev ?? "—", d.rev == null ? "not fetched yet" : d.rev > 150 ? "high demand" : d.rev > 60 ? "steady traffic" : "emerging"],
+                  ["Years listed", ageOf(d) ?? "—", ageOf(d) != null ? `since ${sinceYearOf(d)}` : "no registry match"],
+                  ["In cache", listedLabel(d), d.listedAgoMin != null ? "just crawled" : d.real ? "OSM record age" : "Jun 5 snapshot"],
                   ...(geo ? [["Distance", `${distMi(d).toFixed(1)} mi`, `from ${geo.city}`]] : [])].map(([k, v, sub]) => (
                   <div key={k} style={{ ...S.bizSec, padding: "10px 12px" }}>
                     <div style={S.bizSecT}>{k}</div>
@@ -2839,16 +3046,18 @@ function Screener() {
                 <div style={S.bizSec}>
                   <div style={S.bizSecT}>Contact and location</div>
                   <div style={S.kvGrid}>
-                    <span style={S.kvK}>Address</span><span style={S.kvV}>{d.addr}, San Francisco, CA</span>
+                    <span style={S.kvK}>Address</span><span style={S.kvV}>{[d.addr, cityOf(d)].filter(Boolean).join(", ")}</span>
                     <span style={S.kvK}>Phone</span>
                     <span style={S.kvV}>
-                      <span className={copiedName === d.name ? "phoneHit" : ""}
-                        style={{ ...S.phoneSpan, ...(copiedName === d.name ? { color: GREEN, fontWeight: 700 } : null) }}
-                        onClick={() => copyPhone(d)} title="Click to copy">
-                        {copiedName === d.name ? "[COPIED]" : d.phone}
-                      </span>
+                      {d.phone ? (
+                        <span className={copiedName === d.name ? "phoneHit" : ""}
+                          style={{ ...S.phoneSpan, ...(copiedName === d.name ? { color: GREEN, fontWeight: 700 } : null) }}
+                          onClick={() => copyPhone(d)} title="Click to copy">
+                          {copiedName === d.name ? "[COPIED]" : d.phone}
+                        </span>
+                      ) : <span style={{ color: FAINT }}>not listed</span>}
                     </span>
-                    <span style={S.kvK}>Source</span><span style={{ ...S.kvV, color: MUTED }}>Google listing, OSM, registry</span>
+                    <span style={S.kvK}>Source</span><span style={{ ...S.kvV, color: MUTED }}>{(d.sources && d.sources.join(", ")) || "Google listing, OSM, registry"}</span>
                   </div>
                   <div style={S.mapBox}><iframe title={`Map: ${d.addr}`} src={mapEmbed(d)} style={S.mapFrame} loading="lazy" /></div>
                   <a className="bizLink" style={{ fontSize: 10.5 }} href={mapHref(d)} target="_blank" rel="noreferrer">Open full map</a>
@@ -2860,7 +3069,7 @@ function Screener() {
                       <button key={x.name} className="qItem" style={S.qItem} onClick={() => openBizPage(x)}>
                         <span style={{ minWidth: 0 }}>
                           <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: TEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{x.name}</span>
-                          <span style={{ display: "block", fontSize: 9.5, color: MUTED }}>{x.cat}, {x.rev} reviews</span>
+                          <span style={{ display: "block", fontSize: 9.5, color: MUTED }}>{x.cat}, {x.rev ?? "—"} reviews</span>
                         </span>
                         <span style={{ fontFamily: mono, fontSize: 9.5, fontWeight: 700, color: statusBits(x).c, flexShrink: 0 }}>{statusBits(x).label}</span>
                       </button>
@@ -2931,7 +3140,7 @@ function Screener() {
                   <div style={{ fontSize: 9.5, color: FAINT, marginTop: 4 }}>Paste into Lovable, v0, or Bolt to scaffold their site.</div>
 
                   <div style={{ ...S.bizSecT, marginTop: 14 }}>Google reviews</div>
-                  <div style={{ fontSize: 10, color: FAINT, fontFamily: mono, marginBottom: 6 }}>{rv.total} total, {rv.sampled} sampled</div>
+                  <div style={{ fontSize: 10, color: FAINT, fontFamily: mono, marginBottom: 6 }}>{rv.total ?? "?"} total, {rv.sampled} sampled</div>
                   <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", ...(copiedRev ? { background: GREEN, borderColor: GREEN } : null) }}
                     onClick={() => copyReviews(d)}>
                     {copiedRev ? <>Copied {rv.sampled} reviews to clipboard</> : <><Icon k="copy" size={12} /> Copy all reviews <span style={S.proTag}>PRO</span></>}
@@ -2959,18 +3168,15 @@ function Screener() {
       {locPrompt && (
         <div ref={locPromptRef} style={{ ...S.locPop, left: locPrompt.x, top: locPrompt.y }} role="dialog" aria-label="Request your location for caching">
           <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 10 }}>
-            {admin
-              ? "Location is disabled in demo mode. Sign up to request caching for your own area."
-              : "Ask our servers to resolve your approximate city from your connection and queue a cache build for the businesses around you. Your browser is never prompted."}
+            Your browser will ask for permission, then we detect your position, resolve your city,
+            and crawl the real businesses around you (OpenStreetMap, Google listing checks, registry).
           </div>
-          <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", ...(admin ? { opacity: 0.55, cursor: "not-allowed" } : null) }}
-            disabled={admin}
+          <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }}
             onClick={() => {
               setLocPrompt(null);
-              if (admin) return; // demo cannot request caching
-              if (!authed) { setPendingLoc(true); goToLogin(); return; }
+              if (!authed && !admin) { setPendingLoc(true); goToLogin(); return; }
               locate();
-              flashGeo("Cache is coming to your area. We are building a 40 mile radius around you and will notify you when it is ready.");
+              flashGeo("Detecting your location and crawling the businesses around you.");
             }}>
             <Icon k="target" size={12} /> Request your location for caching
           </button>
@@ -3376,9 +3582,9 @@ function Screener() {
                     <div style={{ fontSize: 10, color: MUTED, marginBottom: 6 }}>{d.cat}, {d.hood}</div>
                     <div style={{ ...S.kvGrid, gridTemplateColumns: "auto 1fr", rowGap: 2, marginBottom: 0, fontSize: 10.5 }}>
                       <span style={S.kvK}>Status</span><span style={{ fontFamily: mono, fontWeight: 700, color: sb.c }}>{sb.label}</span>
-                      <span style={S.kvK}>Rating</span><span style={S.kvV}>{ratingOf(d).toFixed(1)}★</span>
-                      <span style={S.kvK}>Reviews</span><span style={S.kvV}>{d.rev}</span>
-                      <span style={S.kvK}>Phone</span><span style={{ ...S.kvV, fontFamily: mono }}>{d.phone}</span>
+                      <span style={S.kvK}>Rating</span><span style={S.kvV}>{ratingLabel(d)}★</span>
+                      <span style={S.kvK}>Reviews</span><span style={S.kvV}>{d.rev ?? "—"}</span>
+                      <span style={S.kvK}>Phone</span><span style={{ ...S.kvV, fontFamily: mono }}>{d.phone || "—"}</span>
                       {geo && <><span style={S.kvK}>Distance</span><span style={S.kvV}>{distMi(d).toFixed(1)} mi</span></>}
                     </div>
                   </div>
@@ -3392,7 +3598,7 @@ function Screener() {
       {/* ── Current viewers (fixed, bottom-left): live social-proof tension ──
           Admin can switch this off from the dock (VIEWERS). ── */}
       {viewersOn && (
-        <div className="viewersDock" style={S.viewersDock} title="People viewing the San Francisco cache right now">
+        <div className="viewersDock" style={S.viewersDock} title={`People viewing the ${cityTag} cache right now`}>
           <Icon k="user" size={12} />
           <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{viewers}</span>
           <span style={{ color: MUTED }}>viewing now</span>
@@ -3418,7 +3624,7 @@ function Screener() {
             </div>
             <div style={{ fontSize: 10.5, marginTop: 5 }}>
               <span style={{ color: RED, fontWeight: 700, fontFamily: mono }}>No website</span>
-              <span style={{ color: FAINT }}>, {alertToast.biz.rev} reviews, {ratingOf(alertToast.biz).toFixed(1)}★</span>
+              <span style={{ color: FAINT }}>, {alertToast.biz.rev ?? "—"} reviews, {ratingLabel(alertToast.biz)}★</span>
               {geo && <span style={{ color: FAINT }}>, {distMi(alertToast.biz).toFixed(1)} mi</span>}
             </div>
             <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", marginTop: 10 }}

@@ -208,7 +208,7 @@ export default function LoginPage() {
       <style>{CSS}</style>
       <button className="cancelBtn" style={{ ...S.cancelBtn, top: 16, right: 20, zIndex: 2 }} onClick={close} aria-label="Cancel">Cancel</button>
 
-      <div style={S.gateLeft}>
+      <div className="gateLeft" style={S.gateLeft}>
         <button style={{ ...S.brandBtn, fontSize: 16, alignSelf: 'flex-start' }} onClick={close} title="Back to the screener">
           <span style={{ color: TEXT }}>B2Web</span><span style={{ color: RED, fontFamily: mono }}>.site</span>
         </button>
@@ -440,6 +440,20 @@ const CSS = `
     40%, 60% { transform: translateX(7px); }
   }
   @media (max-width: 860px) {
-    .gateRight { display: none; }
+    /* !important: the pane carries display:flex inline, which would
+       otherwise win and squeeze the form into a sliver on phones */
+    .gateRight { display: none !important; }
+    .gateLeft { padding: 20px 18px 24px !important; }
+  }
+  /* Touch targets: 44px minimum on touch screens. min-height clamps the
+     inline padding-driven heights without any layout rewrite. */
+  @media (max-width: 860px), (pointer: coarse) {
+    .btnP, .btnO, .cancelBtn { min-height: 44px; }
+    input:not([type="checkbox"]):not(.cbInput) { min-height: 44px; }
+    .cbInput {
+      width: 44px !important; height: 44px !important;
+      left: 50% !important; top: 50% !important; right: auto !important; bottom: auto !important;
+      transform: translate(-50%, -50%);
+    }
   }
 `;

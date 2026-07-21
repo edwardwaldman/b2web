@@ -747,8 +747,12 @@ function Screener() {
           if (g && g.ok && g.label) label = g.label;
         } catch {}
       }
+      // Only pull what this tier can show: the free slice needs 40 rows at
+      // most, which keeps payloads small and lets the server cache serve
+      // everyone from one crawl.
+      const rowLimit = admin || isPaid ? 400 : 40;
       const qs = `lat=${lat}&lon=${lng}&radius=${opts.radiusM || 4000}` +
-        `&city=${encodeURIComponent(label || "")}` + (opts.fresh ? "&fresh=1" : "");
+        `&city=${encodeURIComponent(label || "")}&limit=${rowLimit}` + (opts.fresh ? "&fresh=1" : "");
       const r = await fetch(`/api/businesses?${qs}`);
       const j = await r.json();
       if (reqId !== liveReq.current) return null; // superseded by a newer request

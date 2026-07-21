@@ -4,7 +4,7 @@ import {
   cacheGet, cacheSet,
 } from "@/lib/leads";
 
-// GET /api/businesses?lat=37.7749&lon=-122.4194&radius=4000[&fresh=1][&all=1]
+// GET /api/businesses?lat=..&lon=..&radius=4000[&fresh=1][&all=1][&limit=40]
 //
 // Real businesses only, no demo rows anywhere in the pipeline.
 // · With GOOGLE_PLACES_API_KEY set, the inventory comes straight from Google
@@ -26,8 +26,28 @@ const OVERPASS_URLS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
 ].filter(Boolean) as string[];
-const TTL_MS = 10 * 60 * 1000;
+// Google mode caches longer than free OSM mode: each crawl spends billable
+// requests, so a snapshot is reused for 30 minutes (override with
+// BUSINESSES_CACHE_TTL_MIN). A forced re-crawl (fresh=1) is honored at most
+// once per 2 minutes per location; inside that window the cache answers.
+const OSM_TTL_MS = 10 * 60 * 1000;
+const GOOGLE_TTL_MS = (parseInt(process.env.BUSINESSES_CACHE_TTL_MIN || "", 10) || 30) * 60 * 1000;
+const FRESH_COOLDOWN_MS = 2 * 60 * 1000;
 const MAX_ROWS = 400;
+
+// Google API spend controls. Batches are fetched sequentially and stop as
+// soon as enough no-website leads are collected, so a lead-dense area costs
+// 1-2 requests instead of the full sweep. A per-instance daily budget hard-
+// stops billable calls; when it is spent, cached or OSM data answers.
+const MAX_BATCHES = Math.min(6, Math.max(1, parseInt(process.env.GOOGLE_PLACES_MAX_BATCHES || "", 10) || 4));
+const TARGET_LEADS = Math.max(20, parseInt(process.env.GOOGLE_PLACES_TARGET_LEADS || "", 10) || 40);
+const DAILY_BUDGET = Math.max(10, parseInt(process.env.GOOGLE_PLACES_DAILY_BUDGET || "", 10) || 250);
+const budget = { day: "", used: 0 };
+function budgetLeft(): number {
+  const today = new Date().toISOString().slice(0, 10);
+  if (budget.day !== today) { budget.day = today; budget.used = 0; }
+  return DAILY_BUDGET - budget.used;
+}
 
 function overpassQuery(lat: number, lon: number, radius: number): string {
   const around = `(around:${radius},${lat},${lon})`;
@@ -75,7 +95,7 @@ const GOOGLE_TYPE_BATCHES: string[][] = [
 
 async function fetchGoogleNearby(lat: number, lon: number, radius: number): Promise<GooglePlaceLite[]> {
   const key = process.env.GOOGLE_PLACES_API_KEY;
-  if (!key) return [];
+  if (!key || budgetLeft() <= 0) return [];
   const base = process.env.GOOGLE_PLACES_URL || "https://places.googleapis.com";
   const one = async (includedTypes: string[]): Promise<GooglePlaceLite[]> => {
     try {
@@ -104,16 +124,22 @@ async function fetchGoogleNearby(lat: number, lon: number, radius: number): Prom
       return Array.isArray(j.places) ? j.places : [];
     } catch { return []; }
   };
-  const batches = await Promise.all(GOOGLE_TYPE_BATCHES.map(one));
-  // Dedupe across batches by place id; drop permanently closed businesses.
+  // Sequential sweep with early exit: stop as soon as TARGET_LEADS
+  // no-website leads are on hand, and never exceed the daily budget.
   const seen = new Set<string>();
   const out: GooglePlaceLite[] = [];
-  for (const p of batches.flat()) {
-    const pid = p.id || p.displayName?.text || "";
-    if (!pid || seen.has(pid)) continue;
-    if ((p as { businessStatus?: string }).businessStatus === "CLOSED_PERMANENTLY") continue;
-    seen.add(pid);
-    out.push(p);
+  let leads = 0;
+  for (const types of GOOGLE_TYPE_BATCHES.slice(0, MAX_BATCHES)) {
+    if (leads >= TARGET_LEADS || budgetLeft() <= 0) break;
+    budget.used += 1;
+    for (const p of await one(types)) {
+      const pid = p.id || p.displayName?.text || "";
+      if (!pid || seen.has(pid)) continue;
+      if ((p as { businessStatus?: string }).businessStatus === "CLOSED_PERMANENTLY") continue;
+      seen.add(pid);
+      out.push(p);
+      if (!p.websiteUri) leads += 1; // no listed URL = a lead for sure
+    }
   }
   return out;
 }
@@ -129,11 +155,13 @@ export async function GET(req: NextRequest) {
   const city = (sp.get("city") || "").slice(0, 80);
   const fresh = sp.get("fresh") === "1";
   const includeSites = sp.get("all") === "1";
+  const limit = Math.min(MAX_ROWS, Math.max(1, parseInt(sp.get("limit") || "", 10) || 120));
 
   const cacheKey = `biz:${lat.toFixed(3)}:${lon.toFixed(3)}:${radius}:${city}:${includeSites ? 1 : 0}`;
-  if (!fresh) {
-    const hit = cacheGet<object>(cacheKey);
-    if (hit) return NextResponse.json(hit);
+  const hit = cacheGet<{ checkedAt: string; rows: LeadRow[] }>(cacheKey);
+  // Serve the cache unless a re-crawl is both requested and past its cooldown.
+  if (hit && (!fresh || Date.now() - Date.parse(hit.checkedAt) < FRESH_COOLDOWN_MS)) {
+    return NextResponse.json({ ...hit, rows: hit.rows.slice(0, limit), count: Math.min(hit.rows.length, limit) });
   }
 
   const checked = new Date();
@@ -147,6 +175,10 @@ export async function GET(req: NextRequest) {
     if (places.length) {
       rows = mergeGoogleNearby([], places, ctx);
       source = "Google Places";
+    } else if (hit) {
+      // Budget spent or Google empty: a stale snapshot of real data beats
+      // burning quota; serve it past its TTL rather than re-crawling.
+      return NextResponse.json({ ...hit, rows: hit.rows.slice(0, limit), count: Math.min(hit.rows.length, limit) });
     }
   }
   if (!rows.length) {
@@ -185,6 +217,6 @@ export async function GET(req: NextRequest) {
     leads: rows.filter((r) => r.status !== "site").length,
     rows,
   };
-  cacheSet(cacheKey, payload, TTL_MS);
-  return NextResponse.json(payload);
+  cacheSet(cacheKey, payload, source === "Google Places" ? GOOGLE_TTL_MS : OSM_TTL_MS);
+  return NextResponse.json({ ...payload, rows: rows.slice(0, limit), count: Math.min(rows.length, limit) });
 }

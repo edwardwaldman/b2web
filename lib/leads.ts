@@ -280,10 +280,10 @@ export function mergeGoogleNearby(rows: LeadRow[], places: GooglePlaceLite[], ct
         const c = classifyUrl(p.websiteUri);
         hit.status = c.status;
         if (c.thirdKind) hit.thirdKind = c.thirdKind; else delete hit.thirdKind;
-        hit.statusNote = statusNoteFor(c.status, { url: p.websiteUri, source: "Google listing", checked: ctx.checked });
+        hit.statusNote = statusNoteFor(c.status, { url: p.websiteUri, source: "Google", checked: ctx.checked });
       } else if (hit.status === "none") {
         // Google confirms there is no listed site either.
-        hit.statusNote = statusNoteFor("none", { url: null, source: "Google listing or OpenStreetMap", checked: ctx.checked });
+        hit.statusNote = statusNoteFor("none", { url: null, source: "Google or OpenStreetMap", checked: ctx.checked });
       }
       if (!hit.sources.includes("Google Places")) hit.sources.push("Google Places");
     } else {

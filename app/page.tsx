@@ -185,6 +185,32 @@ const useAdMode = () => {
   return [m, setM];
 };
 
+// ── Google AdSense units ────────────────────────────────────────────────────
+// Configured via NEXT_PUBLIC_ADSENSE_CLIENT (ca-pub-..., loads the script in
+// layout.tsx) plus per-space slot ids created in the AdSense dashboard. When
+// configured, the ad spaces render real responsive units (no close buttons -
+// AdSense policy); otherwise the neutral placeholder boxes stay.
+const ADS_CLIENT = process.env.NEXT_PUBLIC_ADSENSE_CLIENT || "";
+const ADS_SLOT_INFEED = process.env.NEXT_PUBLIC_ADSENSE_SLOT_INFEED || "";
+const ADS_SLOT_INFEED2 = process.env.NEXT_PUBLIC_ADSENSE_SLOT_INFEED2 || ADS_SLOT_INFEED;
+const ADS_SLOT_SIDEBAR = process.env.NEXT_PUBLIC_ADSENSE_SLOT_SIDEBAR || ADS_SLOT_INFEED;
+const adsLive = !!(ADS_CLIENT && ADS_SLOT_INFEED);
+
+function AdSlot({ slot, minHeight = 60 }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    try { (window.adsbygoogle = window.adsbygoogle || []).push({}); } catch {}
+  }, []);
+  return (
+    <ins ref={ref} className="adsbygoogle"
+      style={{ display: "block", width: "100%", minHeight }}
+      data-ad-client={ADS_CLIENT}
+      data-ad-slot={slot}
+      data-ad-format="auto"
+      data-full-width-responsive="true" />
+  );
+}
+
 function Lock() {
   return (
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"
@@ -727,7 +753,7 @@ function Screener() {
       const r = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, billing: upBilling, email: email || trialEmail || "" }),
+        body: JSON.stringify({ plan, billing: upBilling, email: email || trialEmail || "", userId: (user && user.id) || "" }),
       });
       const j = await r.json();
       if (j && j.ok && j.url) { window.location.href = j.url; return; }
@@ -2088,7 +2114,9 @@ function Screener() {
                       {showAds && i === 11 && rows.length > 14 && (
                         <tr>
                           <td colSpan={isPaid ? 8 : 7} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
-                            {inFeedMode === "ad" ? (
+                            {adsLive ? (
+                              <AdSlot slot={ADS_SLOT_INFEED} minHeight={60} />
+                            ) : inFeedMode === "ad" ? (
                               <div style={{ ...S.inFeedAd, position: "relative" }}>
                                 advertisement
                                 <button
@@ -2115,7 +2143,9 @@ function Screener() {
                       {showAds && i === 27 && rows.length > 30 && (
                         <tr>
                           <td colSpan={isPaid ? 8 : 7} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
-                            {inFeed2 === "ad" ? (
+                            {adsLive ? (
+                              <AdSlot slot={ADS_SLOT_INFEED2} minHeight={60} />
+                            ) : inFeed2 === "ad" ? (
                               <div style={{ ...S.inFeedAd, position: "relative" }}>
                                 advertisement
                                 <button style={S.adCancel} onClick={() => setInFeed2("pitch")} title="Close" aria-label="Close ad">Cancel</button>
@@ -2892,7 +2922,9 @@ function Screener() {
 
                   {showAds && (<>
                   <div style={{ ...S.bizSecT, marginTop: 14 }}>Sponsored</div>
-                  {pageAdMode === "ad" ? (
+                  {adsLive ? (
+                    <AdSlot slot={ADS_SLOT_SIDEBAR} minHeight={210} />
+                  ) : pageAdMode === "ad" ? (
                     <div style={{ ...S.inFeedAd, position: "relative", height: 210 }}>
                       advertisement
                       <button style={S.adCancel} onClick={() => setPageAdMode("pitch")}

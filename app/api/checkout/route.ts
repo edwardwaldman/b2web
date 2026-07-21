@@ -27,7 +27,9 @@ async function stripe(path: string, form?: Record<string, string>): Promise<{ st
     method: form ? "POST" : "GET",
     headers: {
       Authorization: `Bearer ${key}`,
-      ...(form ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
+      // A retried create (double click, flaky network) reuses the session
+      // instead of minting duplicates.
+      ...(form ? { "Content-Type": "application/x-www-form-urlencoded", "Idempotency-Key": crypto.randomUUID() } : {}),
     },
     body: form ? new URLSearchParams(form).toString() : undefined,
     signal: AbortSignal.timeout(15000),
@@ -39,12 +41,13 @@ export async function POST(req: NextRequest) {
   if (!process.env.STRIPE_SECRET_KEY) {
     return NextResponse.json({ ok: false, error: "stripe-not-configured" }, { status: 501 });
   }
-  let plan = "", billing = "mo", email = "";
+  let plan = "", billing = "mo", email = "", userId = "";
   try {
     const j = await req.json();
     plan = String(j.plan || "");
     billing = j.billing === "yr" ? "yr" : "mo";
     email = String(j.email || "").slice(0, 200);
+    userId = String(j.userId || "").slice(0, 64);
   } catch {}
   const p = PLANS[plan];
   if (!p) return NextResponse.json({ ok: false, error: "unknown plan" }, { status: 400 });
@@ -74,6 +77,7 @@ export async function POST(req: NextRequest) {
       `${p.name} (${billing === "yr" ? "yearly" : "monthly"})`;
   }
   if (email) form.customer_email = email;
+  if (userId) form.client_reference_id = userId; // ties the session to the account
 
   try {
     const { status, body } = await stripe("checkout/sessions", form);

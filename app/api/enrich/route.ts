@@ -16,6 +16,16 @@ export const dynamic = "force-dynamic";
 
 const TTL_MS = 6 * 60 * 60 * 1000; // a business's registry data moves slowly
 
+// Per-instance daily budget for billable Google text searches. Once spent,
+// enrichment still runs the free parts (registry match + live URL check).
+const DAILY_BUDGET = Math.max(10, parseInt(process.env.GOOGLE_ENRICH_DAILY_BUDGET || "", 10) || 300);
+const budget = { day: "", used: 0 };
+function budgetLeft(): number {
+  const today = new Date().toISOString().slice(0, 10);
+  if (budget.day !== today) { budget.day = today; budget.used = 0; }
+  return DAILY_BUDGET - budget.used;
+}
+
 interface GoogleDetail {
   rating: number | null;
   rev: number | null;
@@ -27,7 +37,8 @@ interface GoogleDetail {
 
 async function googleDetails(name: string, locHint: string, lat: number | null, lon: number | null): Promise<GoogleDetail | null> {
   const key = process.env.GOOGLE_PLACES_API_KEY;
-  if (!key) return null;
+  if (!key || budgetLeft() <= 0) return null;
+  budget.used += 1;
   try {
     const body: Record<string, unknown> = {
       textQuery: `${name} ${locHint}`.trim(),
@@ -36,7 +47,8 @@ async function googleDetails(name: string, locHint: string, lat: number | null, 
     if (lat != null && lon != null) {
       body.locationBias = { circle: { center: { latitude: lat, longitude: lon }, radius: 2000 } };
     }
-    const r = await fetch("https://places.googleapis.com/v1/places:searchText", {
+    const base = process.env.GOOGLE_PLACES_URL || "https://places.googleapis.com";
+    const r = await fetch(`${base}/v1/places:searchText`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

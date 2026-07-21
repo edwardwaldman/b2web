@@ -34,6 +34,11 @@ export interface LeadRow {
   sources: string[];     // data lineage, e.g. ["OpenStreetMap", "Google Places"]
   real: true;            // marks rows that came from live sources, not the demo
   enriched?: boolean;    // per-business enrichment has already run
+  // "none" from an OSM record only means the record carries no URL - the
+  // business may still have a site. Google listings and the per-row live
+  // check are authoritative; until one of them confirms, verified stays
+  // false and the UI says "No URL on record" instead of "No website".
+  verified: boolean;
 }
 
 export interface LeadReview {
@@ -232,6 +237,9 @@ export function normalizeOverpass(
       listedDays,
       sources: ["OpenStreetMap"],
       real: true,
+      // A tagged URL (site or social) is positive evidence; a missing tag
+      // is not evidence of a missing website.
+      verified: status !== "none",
     });
   }
   return out;
@@ -280,12 +288,13 @@ export function mergeGoogleNearby(rows: LeadRow[], places: GooglePlaceLite[], ct
         const c = classifyUrl(p.websiteUri);
         hit.status = c.status;
         if (c.thirdKind) hit.thirdKind = c.thirdKind; else delete hit.thirdKind;
-        hit.statusNote = statusNoteFor(c.status, { url: p.websiteUri, source: "Google listing", checked: ctx.checked });
+        hit.statusNote = statusNoteFor(c.status, { url: p.websiteUri, source: "Google", checked: ctx.checked });
       } else if (hit.status === "none") {
         // Google confirms there is no listed site either.
-        hit.statusNote = statusNoteFor("none", { url: null, source: "Google listing or OpenStreetMap", checked: ctx.checked });
+        hit.statusNote = statusNoteFor("none", { url: null, source: "Google or OpenStreetMap", checked: ctx.checked });
       }
       if (!hit.sources.includes("Google Places")) hit.sources.push("Google Places");
+      hit.verified = true; // Google listing confirms presence or absence
     } else {
       const { status, thirdKind } = classifyUrl(p.websiteUri);
       const street = (p.formattedAddress || "").split(",")[0].trim();
@@ -309,6 +318,7 @@ export function mergeGoogleNearby(rows: LeadRow[], places: GooglePlaceLite[], ct
         listedDays: null,
         sources: ["Google Places"],
         real: true,
+        verified: true,
       });
     }
   }

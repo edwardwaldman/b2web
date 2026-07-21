@@ -27,8 +27,8 @@ import { flushProfileNow } from '@/utils/profile';
 // · Keyboard: ↑/↓ rows, Enter focuses notes, C copies phone, W opens web
 //   presence, M opens map,
 //   Shift+Click multi-select (export upsell), Cmd/Ctrl+K location, Esc closes.
-// · Rewarded ad appends rows 21–40 in place. Demo timer is 5s, standing in
-//   for the 60s ad unit.
+// · Rewarded ad unlocks rows 21–40 of the real crawl in place. Demo timer is
+//   5s, standing in for the 60s ad unit.
 // · The end-cap under the table is the pitch, always on: no more no-website
 //   businesses in the free slice, everyone mines the same Jun 5 snapshot,
 //   the real-time cache is the edge over competitors. FREE vs PAID compare
@@ -46,19 +46,18 @@ import { flushProfileNow } from '@/utils/profile';
 //   built-in table, and sorts rows nearest-first (free, pure client-side).
 //   A non-SF city pitches the paid city unlock, unless admin mode is on.
 // · ADMIN (fixed, bottom-right) is a QA switch: every paid gate becomes
-//   functional against the mock cache: custom filter inputs, CSV export,
+//   functional against the real cache: custom filter inputs, CSV export,
 //   exclude-contacted, multi-category stacking, a radius filter (needs a
-//   located position), simulated real-time mode, alert arming, city relabel,
-//   and the row cap lifts so the full mock cache renders. The Showing count
-//   is click-to-edit in admin: type a target and it generates that many rows
-//   (deterministic synthetic businesses, up to a 5,000-row safety ceiling).
-// · Refresh (next to the cache tag) pulls "just listed" businesses: admin
-//   gets a short spin then 2-4 fresh no-website leads on top, sorted
-//   newest-first; anonymous gets the real-time pitch. The Listed column is
-//   a hash-stable recency metric (1d-2y); fresh rows show green minutes.
-// · Armed alerts push mock notifications: a small toast drops from the top
-//   center previewing a newly listed no-website business (nearest first when
-//   located), with "Open the full listing" jumping to the detail pane.
+//   located position), alert arming, city relabel, and the row cap lifts so
+//   the full crawl renders. The Showing count is click-to-edit in admin: it
+//   caps the visible slice of the real crawl (it never generates rows).
+// · Refresh (next to the cache tag) re-crawls the area: rows the previous
+//   snapshot did not contain float to the top sorted newest-first; anonymous
+//   gets the real-time pitch. The Listed column is the business record's real
+//   age on its source; freshly surfaced rows show green minutes.
+// · Armed alerts (admin preview) drop a toast from the top center previewing
+//   a real no-website business from the cache (nearest first when located),
+//   with "Open the full listing" jumping to the detail pane.
 // · Ads share one behavior (useAdMode): Cancel swaps in the Go-unlimited
 //   pitch, which auto-reverts to the ad after 5s. Slots: the in-feed table
 //   row, the bottom bar, and the business-page sidebar.
@@ -123,77 +122,12 @@ const PLANS = [
 ];
 const planPrice = (pl, billing) => (billing === "yr" ? Math.round(pl.mo * 0.8) : pl.mo);
 
-// ── Mock SF cache slice ──────────────────────────────────────────────────────
-// Streets match their neighborhoods on purpose — the demo only convinces if an
-// SF person can't catch it lying. status: "none" | "third" | "site"
-const DATA = [
-  { name: "Castro Classic Cuts",      cat: "Barber shop",    rev: 34,  addr: "489 Castro St",      hood: "Castro",            status: "none",                         phone: "(415) 555-0184" },
-  { name: "Mission Cut House",        cat: "Barber shop",    rev: 47,  addr: "2486 Mission St",    hood: "Mission",           status: "third", thirdKind: "Facebook",  phone: "(415) 555-0117" },
-  { name: "Geary Barber Co.",         cat: "Barber shop",    rev: 12,  addr: "718 Geary St",       hood: "Lower Nob Hill",    status: "none",                         phone: "(415) 555-0149" },
-  { name: "Outer Sunset Fades",       cat: "Barber shop",    rev: 8,   addr: "3214 Noriega St",    hood: "Outer Sunset",      status: "none",                         phone: "(415) 555-0102" },
-  { name: "Hayes Valley Hair Studio", cat: "Hair salon",     rev: 64,  addr: "552 Hayes St",       hood: "Hayes Valley",      status: "none",                         phone: "(415) 555-0125" },
-  { name: "Sunset Nails & Spa",       cat: "Nail salon",     rev: 41,  addr: "1916 Irving St",     hood: "Inner Sunset",      status: "third", thirdKind: "Instagram", phone: "(415) 555-0163" },
-  { name: "Richmond Auto Care",       cat: "Auto repair",    rev: 188, addr: "5812 Geary Blvd",    hood: "Outer Richmond",    status: "none",                         phone: "(415) 555-0140" },
-  { name: "Bernal Heights Plumbing",  cat: "Plumber",        rev: 312, addr: "431 Cortland Ave",   hood: "Bernal Heights",    status: "none",                         phone: "(415) 555-0191" },
-  { name: "Great Highway Market",     cat: "Grocery",        rev: 29,  addr: "4498 Judah St",      hood: "Outer Sunset",      status: "none",                         phone: "(415) 555-0158" },
-  { name: "Excelsior Shoe Repair",    cat: "Shoe repair",    rev: 19,  addr: "4623 Mission St",    hood: "Excelsior",         status: "none",                         phone: "(415) 555-0171" },
-  { name: "Clement Street Tailor",    cat: "Tailor",         rev: 16,  addr: "615 Clement St",     hood: "Inner Richmond",    status: "none",                         phone: "(415) 555-0133" },
-  { name: "Polk Street Cleaners",     cat: "Dry cleaner",    rev: 22,  addr: "1744 Polk St",       hood: "Nob Hill",          status: "third", thirdKind: "Facebook",  phone: "(415) 555-0107" },
-  { name: "Portola Hardware",         cat: "Hardware store", rev: 51,  addr: "2630 San Bruno Ave", hood: "Portola",           status: "none",                         phone: "(415) 555-0122" },
-  { name: "Valencia Upholstery",      cat: "Upholstery",     rev: 9,   addr: "1438 Valencia St",   hood: "Mission",           status: "none",                         phone: "(415) 555-0168" },
-  { name: "North Beach Locksmith",    cat: "Locksmith",      rev: 87,  addr: "566 Columbus Ave",   hood: "North Beach",       status: "third", thirdKind: "Linktree",  phone: "(415) 555-0151" },
-  { name: "Balboa Hot Pot",           cat: "Restaurant",     rev: 214, addr: "3608 Balboa St",     hood: "Outer Richmond",    status: "none",                         phone: "(415) 555-0195" },
-];
-
-// Rows 21–40, appended after the rewarded ad. Same street/hood discipline.
-const EXTRA = [
-  { name: "Taraval Wash & Fold",        cat: "Laundromat",      rev: 26,  addr: "2614 Taraval St",     hood: "Parkside",          status: "none",                         phone: "(415) 555-0203" },
-  { name: "Chenery Street Florist",     cat: "Florist",         rev: 14,  addr: "670 Chenery St",      hood: "Glen Park",         status: "none",                         phone: "(415) 555-0211" },
-  { name: "Ocean Avenue Tax Service",   cat: "Tax service",     rev: 31,  addr: "1530 Ocean Ave",      hood: "Ingleside",         status: "third", thirdKind: "Facebook",  phone: "(415) 555-0218" },
-  { name: "Noe Valley Pet Grooming",    cat: "Pet groomer",     rev: 73,  addr: "3961 24th St",        hood: "Noe Valley",        status: "none",                         phone: "(415) 555-0224" },
-  { name: "Divisadero Tire & Wheel",    cat: "Auto repair",     rev: 119, addr: "670 Divisadero St",   hood: "NoPa",              status: "none",                         phone: "(415) 555-0229" },
-  { name: "Leland Avenue Bakery",       cat: "Bakery",          rev: 21,  addr: "36 Leland Ave",       hood: "Visitacion Valley", status: "none",                         phone: "(415) 555-0233" },
-  { name: "Cole Valley Shoe Service",   cat: "Shoe repair",     rev: 11,  addr: "930 Cole St",         hood: "Cole Valley",       status: "none",                         phone: "(415) 555-0246" },
-  { name: "Judah Street Sushi",         cat: "Restaurant",      rev: 167, addr: "3906 Judah St",       hood: "Outer Sunset",      status: "third", thirdKind: "Instagram", phone: "(415) 555-0252" },
-  { name: "Bayview Auto Glass",         cat: "Auto repair",     rev: 44,  addr: "4810 3rd St",         hood: "Bayview",           status: "none",                         phone: "(415) 555-0257" },
-  { name: "Cortland Hardware",          cat: "Hardware store",  rev: 38,  addr: "600 Cortland Ave",    hood: "Bernal Heights",    status: "third", thirdKind: "Facebook",  phone: "(415) 555-0263" },
-  { name: "Lombard Mattress Outlet",    cat: "Furniture store", rev: 17,  addr: "2298 Lombard St",     hood: "Cow Hollow",        status: "none",                         phone: "(415) 555-0268" },
-  { name: "Ingleside Barber Lounge",    cat: "Barber shop",     rev: 52,  addr: "1432 Ocean Ave",      hood: "Ingleside",         status: "none",                         phone: "(415) 555-0274" },
-  { name: "Quintara Rooter & Plumbing", cat: "Plumber",         rev: 95,  addr: "2200 Quintara St",    hood: "Parkside",          status: "none",                         phone: "(415) 555-0285" },
-  { name: "Balboa Optical",             cat: "Optometrist",     rev: 27,  addr: "3821 Balboa St",      hood: "Outer Richmond",    status: "third", thirdKind: "Linktree",  phone: "(415) 555-0291" },
-  { name: "Persia Avenue Upholstery",   cat: "Upholstery",      rev: 6,   addr: "88 Persia Ave",       hood: "Excelsior",         status: "none",                         phone: "(415) 555-0296" },
-  { name: "Hyde Street Tailoring",      cat: "Tailor",          rev: 24,  addr: "1521 Hyde St",        hood: "Russian Hill",      status: "none",                         phone: "(415) 555-0302" },
-  { name: "Silver Terrace Grocery",     cat: "Grocery",         rev: 33,  addr: "1801 Silver Ave",     hood: "Silver Terrace",    status: "none",                         phone: "(415) 555-0307" },
-];
-
-const ALL_ROWS = [...DATA, ...EXTRA];
+// All business data is real and fetched at runtime from /api/businesses
+// (Google Places when a key is configured, OpenStreetMap otherwise). There is
+// no mock cache: before the first fetch lands the table shows skeletons, and
+// a failed fetch shows an error state with a retry, never fabricated rows.
 const REVIEW_STOPS = [0, 5, 10, 25, 50, 100];
 const STAR_STOPS = [0, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
-
-// Believable cache totals per category {t: total rows, l: strictly no website}
-const TOTALS = {
-  "All categories": { t: 24816, l: 9442 },
-  "Barber shop": { t: 212, l: 117 }, "Hair salon": { t: 318, l: 121 },
-  "Nail salon": { t: 247, l: 138 }, "Auto repair": { t: 156, l: 71 },
-  "Plumber": { t: 134, l: 77 }, "Bakery": { t: 98, l: 31 },
-  "Grocery": { t: 421, l: 260 }, "Shoe repair": { t: 23, l: 17 },
-  "Tailor": { t: 61, l: 39 }, "Dry cleaner": { t: 88, l: 52 },
-  "Dentist": { t: 402, l: 64 }, "Hardware store": { t: 34, l: 14 },
-  "Upholstery": { t: 18, l: 13 }, "Locksmith": { t: 42, l: 21 },
-  "Restaurant": { t: 4812, l: 1387 }, "HVAC": { t: 129, l: 58 },
-  "Laundromat": { t: 54, l: 36 }, "Florist": { t: 71, l: 29 },
-  "Tax service": { t: 63, l: 27 }, "Pet groomer": { t: 47, l: 22 },
-  "Optometrist": { t: 96, l: 18 }, "Furniture store": { t: 83, l: 35 },
-};
-
-const CHECKED = "Checked Jun 5"; // cache crawl date — matches "updated 6 days ago"
-const VERIFY = {
-  none: `No URL on its Google listing, OSM entry, or registry record. ${CHECKED}`,
-  Facebook: `Listed URL points to facebook.com. No standalone site. ${CHECKED}`,
-  Instagram: `Listed URL points to instagram.com. No standalone site. ${CHECKED}`,
-  Linktree: `Listed URL points to linktr.ee. No standalone site. ${CHECKED}`,
-  site: `Standalone site responded OK. ${CHECKED}`,
-};
 
 // Value copy for locked power filters, shown in the right pane on click.
 const FEATURES = {
@@ -251,6 +185,32 @@ const useAdMode = () => {
   return [m, setM];
 };
 
+// ── Google AdSense units ────────────────────────────────────────────────────
+// Configured via NEXT_PUBLIC_ADSENSE_CLIENT (ca-pub-..., loads the script in
+// layout.tsx) plus per-space slot ids created in the AdSense dashboard. When
+// configured, the ad spaces render real responsive units (no close buttons -
+// AdSense policy); otherwise the neutral placeholder boxes stay.
+const ADS_CLIENT = process.env.NEXT_PUBLIC_ADSENSE_CLIENT || "";
+const ADS_SLOT_INFEED = process.env.NEXT_PUBLIC_ADSENSE_SLOT_INFEED || "";
+const ADS_SLOT_INFEED2 = process.env.NEXT_PUBLIC_ADSENSE_SLOT_INFEED2 || ADS_SLOT_INFEED;
+const ADS_SLOT_SIDEBAR = process.env.NEXT_PUBLIC_ADSENSE_SLOT_SIDEBAR || ADS_SLOT_INFEED;
+const adsLive = !!(ADS_CLIENT && ADS_SLOT_INFEED);
+
+function AdSlot({ slot, minHeight = 60 }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    try { (window.adsbygoogle = window.adsbygoogle || []).push({}); } catch {}
+  }, []);
+  return (
+    <ins ref={ref} className="adsbygoogle"
+      style={{ display: "block", width: "100%", minHeight }}
+      data-ad-client={ADS_CLIENT}
+      data-ad-slot={slot}
+      data-ad-format="auto"
+      data-full-width-responsive="true" />
+  );
+}
+
 function Lock() {
   return (
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"
@@ -272,9 +232,15 @@ function Caret({ dir }) {
 
 function statusBits(d) {
   const m = STATUS_META[d.status] || STATUS_META.site;
-  const label = d.status === "third" ? `${d.thirdKind || "Social"} only` : m.label;
-  // Live rows carry their own provenance line (source + real check date).
-  const tip = d.statusNote || (d.status === "third" ? (VERIFY[d.thirdKind] || VERIFY.Facebook) : VERIFY[d.status]);
+  // An OSM record with no URL is a lead candidate, not a confirmed absence:
+  // the business may have a site OSM never recorded. Until Google or the
+  // live URL check confirms (verified), the label says what we actually
+  // know. Opening the row runs the cross-check and firms it up.
+  const unconfirmed = d.status === "none" && d.verified === false;
+  const label = d.status === "third" ? `${d.thirdKind || "Social"} only`
+    : unconfirmed ? "No URL on record" : m.label;
+  const tip = (d.statusNote || "Classified from the URL on the business's listing.")
+    + (unconfirmed ? " Open the row to cross-check its Google listing." : "");
   return { c: m.c, label, tip };
 }
 
@@ -307,32 +273,16 @@ const webHref = (d) => {
   return `https://www.google.com/search?q=${encodeURIComponent(`"${d.name}" ${d.hood} ${cityOf(d)}${plat}`)}`;
 };
 
-// Live viewer count per business (deterministic). Low numbers are the prize:
-// fewer agencies looking at that lead right now.
-const viewersOf = (d) => 1 + (hashStr(d.name + "watch") % 48);
-
 const bizUrl = (d) => "https://b2web.site/business/" + d.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
-// ── Metrics: real fields first, deterministic mock as the demo fallback ─────
-const hashStr = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+// ── Metrics: real fields only, "—" until a source supplies the value ────────
 const THIS_YEAR = new Date().getFullYear();
-// Live rows carry d.rating from Google Places; null until enriched. Mock
-// ratings span 1.0–5.0 but cluster in 3–5; only ~1 in 8 falls below 3.0.
-const ratingOf = (d) => {
-  if (d.rating != null) return d.rating;
-  if (d.real) return null; // real business, rating not fetched yet
-  const h = hashStr(d.name + "rt");
-  if (h % 8 === 0) return Math.round((1 + (h % 20) / 10) * 10) / 10; // 1.0–2.9 (rare)
-  return Math.round((3 + (h % 21) / 10) * 10) / 10;                  // 3.0–5.0 (common)
-};
+// d.rating comes from Google Places; null until the row is enriched.
+const ratingOf = (d) => (d.rating != null ? d.rating : null);
 const ratingLabel = (d) => { const r = ratingOf(d); return r == null ? "—" : r.toFixed(1); };
-// Age: registry / OSM start_date year when a source has it; mock otherwise.
-const ageOf = (d) => {
-  if (d.sinceYear) return Math.max(0, THIS_YEAR - d.sinceYear);
-  if (d.real) return null; // no registry match yet
-  return 2 + (hashStr(d.name + "age") % 28); // stable 2–29 yrs listed
-};
-const sinceYearOf = (d) => d.sinceYear || (ageOf(d) != null ? THIS_YEAR - ageOf(d) : null);
+// Age: registry (OpenCorporates) or OSM start_date year when a source has it.
+const ageOf = (d) => (d.sinceYear ? Math.max(0, THIS_YEAR - d.sinceYear) : null);
+const sinceYearOf = (d) => d.sinceYear || null;
 // Ready-to-paste build prompt (Lovable, v0, Bolt) written from the row's data.
 const aiPromptOf = (d) => {
   const presence = d.status === "none" ? "They currently have no website at all"
@@ -344,27 +294,11 @@ const aiPromptOf = (d) => {
   return `Build a fast, mobile-first, single-page website for ${d.name}, a ${d.cat.toLowerCase()} in ${d.hood}, ${cityOf(d)}${d.addr ? ` (${d.addr})` : ""}. ${presence}. ${proof} Sections: hero with a one-line value promise and a tap-to-call button${d.phone ? ` (${d.phone})` : ""}, services with prices, hours and location with an embedded map, and a booking or quote form. Tone: neighborhood-trusted, no stock-photo gloss. Ship clean semantic HTML, system fonts, one accent color, and LocalBusiness structured data for SEO.`;
 };
 
-// ── Geo: neighborhood lat/lng + haversine + nearest-city table ──────────────
-// Business position = hood centroid + tiny stable jitter. Production geocodes
-// the real address; the demo only needs believable relative distances.
-const HOOD_LL = {
-  "Castro": [37.7609, -122.4350], "Mission": [37.7599, -122.4148], "Lower Nob Hill": [37.7887, -122.4149],
-  "Outer Sunset": [37.7554, -122.4939], "Marina": [37.8021, -122.4369], "Hayes Valley": [37.7759, -122.4245],
-  "Inner Sunset": [37.7601, -122.4689], "Outer Richmond": [37.7776, -122.4939], "Bernal Heights": [37.7389, -122.4158],
-  "Glen Park": [37.7338, -122.4337], "Excelsior": [37.7239, -122.4311], "Inner Richmond": [37.7801, -122.4645],
-  "Nob Hill": [37.7930, -122.4161], "SoMa": [37.7785, -122.4056], "Portola": [37.7266, -122.4106],
-  "North Beach": [37.8060, -122.4103], "Lower Pac Heights": [37.7873, -122.4324], "Parkside": [37.7411, -122.4892],
-  "Ingleside": [37.7239, -122.4576], "Noe Valley": [37.7502, -122.4337], "NoPa": [37.7754, -122.4394],
-  "Visitacion Valley": [37.7134, -122.4041], "West Portal": [37.7407, -122.4664], "Cole Valley": [37.7659, -122.4501],
-  "Bayview": [37.7299, -122.3865], "Cow Hollow": [37.7972, -122.4389], "Russian Hill": [37.8014, -122.4189],
-  "Silver Terrace": [37.7368, -122.3993],
-};
-const llOf = (d) => {
-  if (d.lat != null && d.lon != null) return [d.lat, d.lon]; // real coordinates
-  const b = HOOD_LL[d.hood] || [37.7749, -122.4194];
-  return [b[0] + ((hashStr(d.name + "la") % 100) / 100 - 0.5) * 0.006,
-          b[1] + ((hashStr(d.name + "lo") % 100) / 100 - 0.5) * 0.006];
-};
+// ── Geo: real coordinates + haversine + nearest-city fallback table ─────────
+// Every row's position comes from its source (Google Places location or the
+// OSM element). Rows without coordinates return null and are excluded from
+// distance math instead of being given an invented position.
+const llOf = (d) => (d.lat != null && d.lon != null ? [d.lat, d.lon] : null);
 const hav = (a1, o1, a2, o2) => {
   const R = 3958.8, r = Math.PI / 180;
   const dA = (a2 - a1) * r, dO = (o2 - o1) * r;
@@ -388,44 +322,11 @@ const CITIES = [
   { n: "Boston, MA", lat: 42.3601, lng: -71.0589 },
 ];
 
-// ── Synthetic cache rows for admin volume testing ───────────────────────────
-// Deterministic per index so distances/ratings stay stable across renders.
-// Hoods come from HOOD_LL so llOf/haversine resolve; status is biased toward
-// "none" since this is a no-website screener. Names combine a place word, a
-// suffix noun, and the category, which keeps them unique and natural-looking
-// for the thousands of rows admin can request.
-const GEN_PLACES = ["Castro","Mission","Sunset","Richmond","Marina","Noe","Bernal","Portola","Excelsior","Glen Park","Hayes","Cole","Bayview","Ingleside","Parkside","Ocean","Balboa","Judah","Clement","Geary","Irving","Taraval","Divisadero","Fillmore","Polk","Hyde","Ulloa","Cortland","Lombard","Haight","Church","Valencia"];
-const GEN_SUFFIX = ["Studio","Co.","Works","Center","Shop","House","Express","Pro","Depot","Corner","Point","Hub","Room","Station","Collective","Group"];
-const GEN_CATS = ["Barber shop","Hair salon","Nail salon","Auto repair","Plumber","Bakery","Grocery","Shoe repair","Tailor","Dry cleaner","Dentist","Hardware store","Upholstery","Locksmith","Restaurant","HVAC","Laundromat","Florist","Tax service","Pet groomer","Optometrist","Furniture store","Electrician","Roofing","Landscaping","Pest control","Chiropractor","Cafe","Bar","Bookstore"];
-const GEN_STREETS = ["Mission St","Valencia St","Geary Blvd","Irving St","Clement St","Judah St","Taraval St","Ocean Ave","Balboa St","Noriega St","24th St","Church St","Divisadero St","Fillmore St","Polk St","Hyde St","Ulloa St","Cortland Ave","San Bruno Ave","3rd St","Columbus Ave","Chestnut St"];
-const GEN_THIRD = ["Facebook","Instagram","Linktree"];
-const GEN_HOODS = Object.keys(HOOD_LL);
-const genRow = (i) => {
-  const id = ALL_ROWS.length + i + 1;
-  const h = (salt) => hashStr("gen:" + id + ":" + salt);
-  const cat = GEN_CATS[h("cat") % GEN_CATS.length];
-  const r = h("stat") % 100;
-  let status = "none", thirdKind;
-  if (r >= 62) { status = "third"; thirdKind = GEN_THIRD[h("tk") % GEN_THIRD.length]; }
-  const name = `${GEN_PLACES[i % GEN_PLACES.length]} ${GEN_SUFFIX[Math.floor(i / GEN_PLACES.length) % GEN_SUFFIX.length]} ${cat}`;
-  return {
-    name, cat, rev: 5 + (h("rev") % 400),
-    addr: `${100 + (h("num") % 4899)} ${GEN_STREETS[h("st") % GEN_STREETS.length]}`,
-    hood: GEN_HOODS[h("hood") % GEN_HOODS.length],
-    status, ...(thirdKind ? { thirdKind } : {}),
-    phone: `(415) 555-${String(320 + (h("ph") % 9679)).padStart(4, "0")}`,
-  };
-};
-const GEN_MAX = 5000; // safety ceiling so the table doesn't lock the browser
-
 // ── "Listed" recency metric ─────────────────────────────────────────────────
-// Live rows carry listedDays (days since their OSM record was last touched);
-// mock rows fall back to a deterministic hash-stable 1d–2y spread. Rows
-// injected by Refresh carry listedAgoMin (minutes) and render green.
-const listedDaysOf = (d) =>
-  d.listedDays != null ? Math.max(1, d.listedDays)
-  : d.real ? null // Google-only row: no edit history to date it by
-  : 1 + (hashStr(d.name + "listed") % 720);
+// Rows carry listedDays (days since their OSM record was last touched) when
+// the source provides edit history; Google rows have none and show "—". Rows
+// surfaced by a re-crawl carry listedAgoMin (minutes) and render green.
+const listedDaysOf = (d) => (d.listedDays != null ? Math.max(1, d.listedDays) : null);
 const listedMin = (d) => {
   if (d.listedAgoMin != null) return d.listedAgoMin;
   const days = listedDaysOf(d);
@@ -441,58 +342,18 @@ const listedLabel = (d) => {
   return `${(days / 365).toFixed(1).replace(/\.0$/, "")}y ago`;
 };
 
-// ── Mock Google reviews (deterministic per business) ────────────────────────
-// A believable review dump the "copy all reviews" button pulls to clipboard.
-// Count tracks the listing's review number (capped for the sample); text is
-// stitched from parts so it reads like real Google reviews without repeating.
-const RV_NAMES = ["Marcus T.","Jenny L.","David R.","Priya S.","Carlos M.","Aisha K.","Tom W.","Linda H.","Sofia G.","Ben C.","Rachel N.","Kevin P.","Grace O.","Sam D.","Nina V.","Omar F.","Hannah B.","Leo M.","Yuki T.","Ana P."];
-const RV_OPEN = ["Been coming here for years", "Booked last minute", "First time customer", "My go-to spot", "Stopped in on a whim", "Local and loyal", "Found them on a recommendation", "Walked in off the street"];
-const RV_MID = ["and the staff were friendly and quick", "and the service was solid all around", "and they really know what they're doing", "and the pricing was fair", "and I was in and out fast", "and they went above and beyond", "and the quality was better than expected", "and the owner is genuinely great"];
-const RV_END = ["Highly recommend.", "Will be back.", "Can't beat it.", "Five stars.", "Tell your friends.", "Worth the trip.", "No complaints.", "Exactly what I needed."];
-const RV_LOW = ["Service was slow and a bit disorganized.", "Fine, but nothing special for the price.", "Had to wait way past my appointment time.", "Decent work but the communication was poor.", "Wanted to love it, left underwhelmed."];
+// ── Google reviews ──────────────────────────────────────────────────────────
+// Only real review text is ever shown: /api/enrich fetches it from the
+// business's Google listing when a row is opened. Nothing is synthesized.
 const reviewsOf = (d) => {
-  if (d.real) {
-    // Real rows only ever show real review text (fetched by /api/enrich when
-    // the row is opened; needs a Places key). Never synthesize for them.
-    const list = d.reviews || [];
-    return { total: d.rev != null ? d.rev : list.length, sampled: list.length, list };
-  }
-  const total = Math.max(1, d.rev);
-  const n = Math.min(total, 12); // sample the most recent dozen
-  const rating = ratingOf(d);
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    const h = (salt) => hashStr(d.name + ":rv:" + i + ":" + salt);
-    const low = (h("stars") % 10) < 2 && rating < 4.5; // occasional 2-3 star
-    const stars = low ? 2 + (h("s") % 2) : 4 + (h("s") % 2);
-    const when = 1 + (h("when") % 51);
-    const whenL = when < 4 ? `${when} weeks ago` : `${Math.round(when / 4.3)} months ago`;
-    const body = low
-      ? RV_LOW[h("b") % RV_LOW.length]
-      : `${RV_OPEN[h("o") % RV_OPEN.length]} ${RV_MID[h("m") % RV_MID.length]}. ${RV_END[h("e") % RV_END.length]}`;
-    out.push({ author: RV_NAMES[h("nm") % RV_NAMES.length], stars, when: whenL, body });
-  }
-  return { total, sampled: n, list: out };
+  const list = d.reviews || [];
+  return { total: d.rev != null ? d.rev : list.length, sampled: list.length, list };
 };
 const reviewsText = (d) => {
   const { total, sampled, list } = reviewsOf(d);
   const head = `${d.name}, ${[d.addr, cityOf(d)].filter(Boolean).join(", ")}\nGoogle reviews: ${ratingLabel(d)}★, ${total} total (showing ${sampled} most recent)\n${"=".repeat(48)}\n`;
   if (!list.length) return head + `No review text cached yet. Latest reviews: ${mapHref(d)}`;
   return head + list.map((r) => `${r.author}, ${"★".repeat(r.stars)}${"☆".repeat(5 - r.stars)}, ${r.when}\n${r.body}`).join("\n\n");
-};
-
-// Fresh rows for the Refresh action: generated off a high index band so they
-// never collide with admin volume rows, biased hard toward no-website.
-const freshRow = (k) => {
-  const base = genRow(10000 + k);
-  const r = hashStr("fr:" + k) % 100;
-  const status = r < 75 ? "none" : "third";
-  return {
-    ...base,
-    status,
-    ...(status === "third" ? { thirdKind: GEN_THIRD[hashStr("frk:" + k) % GEN_THIRD.length] } : {}),
-    listedAgoMin: 2 + (hashStr("fram:" + k) % 38),
-  };
 };
 
 // Route entry. Hosts must not fork the UI: the screener below is fully
@@ -530,10 +391,8 @@ function Screener() {
 
   // data volume + ad
   const [extra, setExtra] = useState(false); // rows 21–40 unlocked
-  const [adminRows, setAdminRows] = useState(null); // admin: forced cache size (generates rows)
-  const [fresh, setFresh] = useState([]);            // rows injected by Refresh (newly listed)
+  const [adminRows, setAdminRows] = useState(null); // admin: cap the visible slice of the real cache
   const [refreshing, setRefreshing] = useState(false);
-  const freshCount = useRef(0);
   const [viewed, setViewed] = useState(() => new Set()); // rows opened in detail
   const markViewed = (name) => setViewed((v) => { if (v.has(name)) return v; const n = new Set(v); n.add(name); return n; });
   const [picks, setPicks] = useState(() => new Set());   // far-left bulk checkboxes
@@ -589,7 +448,6 @@ function Screener() {
   const [resendLeft, setResendLeft] = useState(0);   // code resend cooldown
   const [refreshLock, setRefreshLock] = useState(0); // seconds until refresh allowed
   const [authLock, setAuthLock] = useState(0);       // seconds until auth allowed
-  const [viewers, setViewers] = useState(212);       // live "current viewers"
   const [notifOpen, setNotifOpen] = useState(false);
   const notifRef = useRef(null);
   const [notifSeen, setNotifSeen] = useState(false);
@@ -609,9 +467,11 @@ function Screener() {
   const [geoMsg, setGeoMsg] = useState(null);
 
   // Live data: real businesses for a real location, served by /api/businesses
-  // (OpenStreetMap Overpass, plus Google Places when a key is configured).
-  // null = fetch not landed yet (or failed) -> the mock demo cache renders.
+  // (Google Places when a key is configured, OpenStreetMap otherwise).
+  // null = fetch not landed yet; liveErr set = the crawl failed and the table
+  // shows an error state with a retry. There is no mock fallback.
   const [live, setLive] = useState(null); // {rows, city, lat, lng, checkedAt, source, count, googleEnriched}
+  const [liveErr, setLiveErr] = useState(null); // human-readable crawl failure
   const liveReq = useRef(0);              // request generation, drops stale responses
   const enrichBusy = useRef(new Set());   // per-business enrich in flight
   const [pendingCoords, setPendingCoords] = useState(null); // detected coords awaiting signup
@@ -633,14 +493,7 @@ function Screener() {
   const [cats, setCats] = useState(() => new Set()); // stacked categories
   const [radiusOn, setRadiusOn] = useState(false);
   const [radiusMi, setRadiusMi] = useState(3);
-  const [rtOn, setRtOn] = useState(false);           // simulated live mode
-  const [ultra, setUltra] = useState(false);         // ULTRA demo: hyper-live stats
-  // Viewers dock (bottom-left social proof). Admin can switch it off; the
-  // choice persists and outlives admin, so a clean recording stays clean.
-  const [viewersOn, setViewersOn] = useState(() => {
-    try { return localStorage.getItem("b2w-viewers") !== "0"; } catch {}
-    return true;
-  });
+  const [rtOn, setRtOn] = useState(false);           // admin: real-time relabel
   const [simTier, setSimTier] = useState("unlimited"); // admin: which tier to preview
   const [deskNote, setDeskNote] = useState(true);    // ≤768px: "use desktop" strip
   const [adminAsk, setAdminAsk] = useState(false);   // admin password modal
@@ -730,32 +583,28 @@ function Screener() {
 
   const liveRows = live ? live.rows : null;
   const pool = useMemo(() => {
-    let base;
-    if (admin && adminRows != null) {
-      const n = Math.max(1, Math.min(adminRows, GEN_MAX));
-      if (n <= ALL_ROWS.length) base = ALL_ROWS.slice(0, n);
-      else {
-        const gen = []; for (let i = 0; i < n - ALL_ROWS.length; i++) gen.push(genRow(i));
-        base = ALL_ROWS.concat(gen);
-      }
-    } else if (liveRows && liveRows.length) {
-      // Real crawled businesses. The anonymous free slice stays capped like
-      // the demo (20 rows, 40 after the rewarded ad); paid/admin get it all.
-      base = admin || isPaid ? liveRows : liveRows.slice(0, extra ? 40 : 20);
-    } else {
-      base = admin || extra ? ALL_ROWS : DATA; // admin (no target): full mock cache
-    }
-    return fresh.length ? [...fresh, ...base] : base;
-  }, [admin, adminRows, extra, fresh, liveRows, isPaid]);
+    // Real crawled businesses only. Before the first fetch (or after a failed
+    // one) the pool is empty and the table shows skeletons or the error state.
+    if (!liveRows || !liveRows.length) return [];
+    // The anonymous free slice is capped (20 rows, 40 after the rewarded ad);
+    // paid/admin see the whole crawl. Admin's row editor caps the slice too —
+    // it never generates data.
+    let base = admin || isPaid ? liveRows : liveRows.slice(0, extra ? 40 : 20);
+    if (admin && adminRows != null) base = base.slice(0, Math.max(1, adminRows));
+    return base;
+  }, [admin, adminRows, extra, liveRows, isPaid]);
 
   // Category options track whatever is actually in the pool.
   const catOpts = useMemo(
     () => ["All categories", ...Array.from(new Set(pool.map((d) => d.cat))).sort()],
     [pool]);
 
-  // "While you were away": newly listed no-website businesses you have not
-  // opened yet. Deterministic so the badge count is stable across renders.
-  const missed = useMemo(() => Array.from({ length: 6 }, (_, i) => freshRow(500 + i)), []);
+  // "While you were away": the most recently listed leads in the real cache
+  // that you have not opened yet.
+  const missed = useMemo(
+    () => pool.filter((d) => d.status === "none" && !viewed.has(d.name) && listedDaysOf(d) != null)
+      .sort((a, b) => listedMin(a) - listedMin(b)).slice(0, 6),
+    [pool, viewed]);
 
   const qMatches = useMemo(() => {
     const t = q.trim().toLowerCase();
@@ -775,13 +624,14 @@ function Screener() {
       if (onlyLeads && d.status !== "none") return false;
       if (admin && excludeContacted && contacted.has(d.name)) return false;
       if (admin && radiusOn && geo) {
-        const [la, lo] = llOf(d);
-        if (hav(geo.lat, geo.lng, la, lo) > radiusMi) return false;
+        const ll = llOf(d);
+        if (!ll || hav(geo.lat, geo.lng, ll[0], ll[1]) > radiusMi) return false;
       }
       return true;
     });
     const dirMul = sort.dir === "desc" ? -1 : 1;
     const ord = (d) => STATUS_META[d.status].order;
+    const distOf = (d) => { const ll = llOf(d); return ll && geo ? hav(geo.lat, geo.lng, ll[0], ll[1]) : Number.MAX_SAFE_INTEGER; };
     r = [...r].sort((a, b) => {
       let v = 0;
       if (sort.key === "rev") v = (a.rev ?? -1) - (b.rev ?? -1);
@@ -789,24 +639,16 @@ function Screener() {
       else if (sort.key === "name") v = a.name.localeCompare(b.name);
       else if (sort.key === "addr") v = a.addr.localeCompare(b.addr);
       else if (sort.key === "status") v = ord(a) - ord(b);
-      else if (sort.key === "views") v = viewersOf(a) - viewersOf(b);
       else if (sort.key === "listed") v = listedMin(a) - listedMin(b);
-      else if (sort.key === "dist" && geo) v = hav(geo.lat, geo.lng, ...llOf(a)) - hav(geo.lat, geo.lng, ...llOf(b));
+      else if (sort.key === "dist" && geo) v = distOf(a) - distOf(b);
       return v * dirMul;
     });
     return r;
   }, [pool, cat, minRev, minStars, hood, onlyLeads, sort, geo, excludeContacted, contacted, admin, multiCatOn, cats, radiusOn, radiusMi]);
 
-  // Cache-wide totals, scaled down believably as min-reviews rises
-  const decay = Math.exp(-minRev / 70);
-  const base = TOTALS[cat] || TOTALS["All categories"];
-  const cacheTotal = Math.max(rows.length, Math.round((onlyLeads ? base.l : base.t) * decay));
-  const remaining = cacheTotal - rows.length;
   const freeCap = extra ? 40 : 20;
 
-  // Resolve against the live pool first (it may hold generated or freshly
-  // refreshed rows that are not in the static ALL_ROWS), then fall back.
-  const findBiz = (name) => pool.find((d) => d.name === name) || ALL_ROWS.find((d) => d.name === name) || null;
+  const findBiz = (name) => pool.find((d) => d.name === name) || null;
   const selBiz = selected ? findBiz(selected) : null;
 
   const toggleSort = (key) =>
@@ -899,34 +741,81 @@ function Screener() {
   };
 
   // Trial start: email required here; payment details are collected on
-  // Stripe. The prototype opens Stripe checkout and starts the trial at
-  // that tier.
+  // Stripe. /api/checkout creates a real subscription Checkout Session
+  // (1-day trial) and we redirect to it; the return URL is verified
+  // server-side before the tier activates. Logged-out visitors run the
+  // free signup first, remembering the plan so checkout resumes after.
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const startCheckout = async (plan) => {
+    if (checkoutBusy) return;
+    setCheckoutBusy(true);
+    try {
+      const r = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan, billing: upBilling, email: email || trialEmail || "", userId: (user && user.id) || "" }),
+      });
+      const j = await r.json();
+      if (j && j.ok && j.url) { window.location.href = j.url; return; }
+      flashGeo(j && j.error === "stripe-not-configured"
+        ? "Payments are not configured on this deployment yet."
+        : "Could not start checkout. Try again.");
+    } catch {
+      flashGeo("Could not start checkout. Try again.");
+    } finally {
+      setCheckoutBusy(false);
+      setUp(null);
+    }
+  };
   const startTrial = (plan) => {
     if (!authed && !admin && !trialEmail.trim()) { setUpErr(true); return; }
-    // Logged-out: run the free signup first (email code), remembering the plan
-    // so checkout resumes right after. Signed-in: straight to Stripe.
     if (!authed && !admin) {
       setPendingPlan(plan);
       setUp(null);
       goToLogin();
       return;
     }
-    window.open("https://checkout.stripe.com", "_blank", "noopener");
-    if (plan) setTier(plan);
-    setUp(null);
+    startCheckout(plan);
   };
 
+  // Returning from Stripe: verify the session server-side, then activate.
+  useEffect(() => {
+    let params;
+    try { params = new URLSearchParams(window.location.search); } catch { return; }
+    const state = params.get("checkout");
+    if (!state) return;
+    const clean = () => { try { window.history.replaceState({}, "", window.location.pathname); } catch {} };
+    if (state === "cancel") { flashGeo("Checkout canceled. No charge was made."); clean(); return; }
+    const sid = params.get("session_id") || "";
+    if (state !== "success" || !sid) { clean(); return; }
+    fetch(`/api/checkout?session_id=${encodeURIComponent(sid)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j && j.ok && j.paid && j.plan) {
+          setTier(j.plan);
+          flashGeo(`Your ${j.plan === "unlimited" ? "Unlimited" : "Starter"} trial is active.`);
+        } else {
+          flashGeo("Checkout is still processing. Refresh in a moment.");
+        }
+      })
+      .catch(() => flashGeo("Could not verify the checkout. Refresh in a moment."))
+      .finally(clean);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Distance from the located user to a business, in miles.
-  const distMi = (d) => (geo ? hav(geo.lat, geo.lng, llOf(d)[0], llOf(d)[1]) : null);
+  const distMi = (d) => { const ll = llOf(d); return geo && ll ? hav(geo.lat, geo.lng, ll[0], ll[1]) : null; };
+  const distLabel = (d) => { const m = distMi(d); return m == null ? null : `${m.toFixed(1)} mi`; };
 
   const flashGeo = (m) => { setGeoMsg(m); setTimeout(() => setGeoMsg(null), 3200); };
 
   // Pull the real business cache for a location. Resolves the city label via
   // /api/geocode when the caller doesn't have one, then crawls with
-  // /api/businesses. On failure the mock demo cache stays up.
+  // /api/businesses. On failure the table shows an error state with a retry.
   const loadLive = async (lat, lng, cityLabel, opts = {}) => {
     const reqId = ++liveReq.current;
     setBusy("loading");
+    setLiveErr(null);
     try {
       let label = cityLabel;
       if (!label) {
@@ -935,8 +824,12 @@ function Screener() {
           if (g && g.ok && g.label) label = g.label;
         } catch {}
       }
+      // Only pull what this tier can show: the free slice needs 40 rows at
+      // most, which keeps payloads small and lets the server cache serve
+      // everyone from one crawl.
+      const rowLimit = admin || isPaid ? 400 : 40;
       const qs = `lat=${lat}&lon=${lng}&radius=${opts.radiusM || 4000}` +
-        `&city=${encodeURIComponent(label || "")}` + (opts.fresh ? "&fresh=1" : "");
+        `&city=${encodeURIComponent(label || "")}&limit=${rowLimit}` + (opts.fresh ? "&fresh=1" : "");
       const r = await fetch(`/api/businesses?${qs}`);
       const j = await r.json();
       if (reqId !== liveReq.current) return null; // superseded by a newer request
@@ -955,8 +848,11 @@ function Screener() {
         };
       });
       return j;
-    } catch {
-      if (reqId === liveReq.current) flashGeo("Live crawl unreachable right now. Showing the demo cache.");
+    } catch (e) {
+      if (reqId === liveReq.current) {
+        setLiveErr(e instanceof Error ? e.message : "Crawl failed");
+        flashGeo("Live crawl unreachable right now.");
+      }
       return null;
     } finally {
       if (reqId === liveReq.current) { setBusy("idle"); firstPaint.current = false; }
@@ -994,6 +890,7 @@ function Screener() {
             n.status = j.statusPatch.status;
             if (j.statusPatch.thirdKind) n.thirdKind = j.statusPatch.thirdKind; else delete n.thirdKind;
             n.statusNote = j.statusPatch.statusNote;
+            n.verified = true; // Google and/or the live URL check has spoken
           }
           n.sources = Array.from(new Set([...(x.sources || []), ...(j.sources || [])]));
           return n;
@@ -1046,9 +943,10 @@ function Screener() {
     }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
   };
 
-  // Refresh (admin / paid): pull "just listed" businesses into the cache. A
-  // short spin sells the crawl, then 2-4 fresh no-website leads land on top
-  // and the sort flips to newest-first so they are visible immediately.
+  // Refresh (admin / paid): re-crawl the area now. Anything the crawl finds
+  // that was not in the previous snapshot floats to the top as "just listed"
+  // (loadLive marks unseen rows with listedAgoMin) and the sort flips to
+  // newest-first so it is visible immediately.
   const refreshCache = () => {
     if (refreshing) return;
     const wait = rlRetryIn("refresh");
@@ -1056,26 +954,12 @@ function Screener() {
     rlHit("refresh");
     setRefreshLock(rlRetryIn("refresh"));
     setRefreshing(true);
-    setBusy("loading");
-    if (live) {
-      // Real mode: re-crawl the area now; anything new floats to the top as
-      // "just listed" (loadLive marks unseen rows with listedAgoMin).
-      loadLive(live.lat, live.lng, live.city, { fresh: true }).then((j) => {
-        setRefreshing(false);
-        if (j) setSort({ key: "listed", dir: "asc" });
-      });
-      return;
-    }
-    setTimeout(() => {
-      const batch = 2 + (freshCount.current % 3);
-      const add = [];
-      for (let i = 0; i < batch; i++) add.push(freshRow(freshCount.current + i));
-      freshCount.current += batch;
-      setFresh((f) => [...add, ...f].slice(0, 40));
-      setSort({ key: "listed", dir: "asc" });
+    const lat = live ? live.lat : 37.7749, lng = live ? live.lng : -122.4194;
+    const city = live ? live.city : "San Francisco, CA";
+    loadLive(lat, lng, city, { fresh: true }).then((j) => {
       setRefreshing(false);
-      setBusy("idle");
-    }, 650);
+      if (j && live) setSort({ key: "listed", dir: "asc" });
+    });
   };
 
   // CSV export (admin / paid): the current view or the shift+click selection.
@@ -1087,34 +971,32 @@ function Screener() {
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "b2web-sf-leads.csv";
+    a.download = "b2web-leads.csv";
     a.click();
     URL.revokeObjectURL(a.href);
   };
 
   useEffect(() => {
     try { localStorage.setItem("b2w-admin", admin ? "1" : "0"); } catch {}
-    if (!admin) { setAdminRows(null); setEditRows(false); setFresh([]); }
+    if (!admin) { setAdminRows(null); setEditRows(false); }
     if (admin) setWall(false); // admin acts as the top paid tier: no wall
-    if (!admin) setUltra(false);
   }, [admin]);
 
-  useEffect(() => {
-    try { localStorage.setItem("b2w-viewers", viewersOn ? "1" : "0"); } catch {}
-  }, [viewersOn]);
-
-  // Armed alerts (admin): simulate newly listed no-website businesses pushing
-  // in. A toast drops from the top center ~1.2s after arming, then every 18s,
-  // rotating through the cache (nearest first once located).
+  // Armed alerts (admin preview): cycle through the real no-website leads in
+  // the cache, nearest first once located. The toast shows the row's actual
+  // recency, never an invented one.
   useEffect(() => {
     if (!(admin && alertOn)) { setAlertToast(null); return; }
-    const cand = (liveRows && liveRows.length ? liveRows : ALL_ROWS).filter((d) => d.status === "none");
+    const cand = (liveRows || []).filter((d) => d.status === "none");
     if (!cand.length) { setAlertToast(null); return; }
-    if (geo) cand.sort((a, b) => hav(geo.lat, geo.lng, ...llOf(a)) - hav(geo.lat, geo.lng, ...llOf(b)));
+    if (geo) {
+      const distOf = (d) => { const ll = llOf(d); return ll ? hav(geo.lat, geo.lng, ll[0], ll[1]) : Number.MAX_SAFE_INTEGER; };
+      cand.sort((a, b) => distOf(a) - distOf(b));
+    }
     const fire = () => {
       const biz = cand[alertIdx.current % cand.length];
       alertIdx.current += 1;
-      setAlertToast({ biz, ago: 1 + (hashStr(biz.name + "ago") % 9) });
+      setAlertToast({ biz });
     };
     const t0 = setTimeout(fire, 1200);
     const iv = setInterval(fire, 18000);
@@ -1151,7 +1033,7 @@ function Screener() {
       setPendingCity(null);
     }
     if (pendingLoc) { setPendingLoc(false); locate(); flashGeo("Detecting your location and crawling the businesses around you."); } // finish the detect flow
-    if (pendingPlan) { const pl = pendingPlan; setPendingPlan(null); setTier(pl); window.open("https://checkout.stripe.com", "_blank", "noopener"); }
+    if (pendingPlan) { const pl = pendingPlan; setPendingPlan(null); startCheckout(pl); }
   };
   const doLogOut = async () => {
     if (busyAuth) return;
@@ -1253,37 +1135,6 @@ function Screener() {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
-
-  // Live "current viewers" wobble. ULTRA makes it lurch faster and wider.
-  useEffect(() => {
-    const period = ultra ? 380 : 2600;
-    const t = setInterval(() => {
-      setViewers((v) => {
-        const swing = ultra ? 14 : 3;
-        let n = v + (Math.floor(Math.random() * (swing * 2 + 1)) - swing);
-        if (n < 120) n = 120 + Math.floor(Math.random() * 20);
-        if (n > 940) n = 940 - Math.floor(Math.random() * 20);
-        return n;
-      });
-    }, period);
-    return () => clearInterval(t);
-  }, [ultra]);
-
-  // LIVE (admin): the cache streams. Every 1.6s a newly listed no-website
-  // business lands on top and everything already in the fresh block ages a
-  // minute, so the feed visibly flows down and off the bottom at 40 rows.
-  // Sort pins to newest-first on the way in; a hand sort afterwards is left
-  // alone. No setBusy here: skeletons would strobe the table every tick.
-  useEffect(() => {
-    if (!(admin && ultra)) return;
-    setSort({ key: "listed", dir: "asc" });
-    const t = setInterval(() => {
-      const row = { ...freshRow(freshCount.current), listedAgoMin: 1 };
-      freshCount.current += 1;
-      setFresh((f) => [row, ...f.map((d) => ({ ...d, listedAgoMin: (d.listedAgoMin ?? 0) + 1 }))].slice(0, 40));
-    }, 1600);
-    return () => clearInterval(t);
-  }, [admin, ultra]);
 
   // Resend-code cooldown countdown
   useEffect(() => {
@@ -1831,7 +1682,7 @@ function Screener() {
                 <button key={v} role="tab" aria-selected={view === v}
                   style={{ ...S.billBtn, ...(view === v ? S.billOn : null) }}
                   onClick={(e) => {
-                    if (locked) { openUnlimited(e.currentTarget, { title: `${lab} view`, body: "Split view keeps the screener on the left and the business you are working on the right. Trending ranks the cache by how many people are viewing each lead right now. Both ship with the paid plans." }); return; }
+                    if (locked) { openUnlimited(e.currentTarget, { title: `${lab} view`, body: "Split view keeps the screener on the left and the business you are working on the right. Trending ranks the cache by review volume, the most-reviewed no-website leads first. Both ship with the paid plans." }); return; }
                     setView(v);
                   }}>
                   {lab}{locked && <Lock />}
@@ -1938,8 +1789,8 @@ function Screener() {
           <span style={S.sysK}>Queue</span><span style={S.sysV}>0</span>
           <span style={S.vruleSm} />
           <span style={S.sysK}>Cache</span>
-          <span style={{ ...S.sysV, ...(admin && (rtOn || fresh.length) ? { color: GREEN } : null) }}>
-            {admin && rtOn ? "Live" : admin && fresh.length ? "Now" : "6d"}
+          <span style={{ ...S.sysV, ...(live ? { color: GREEN } : null) }}>
+            {live ? agoLabel(live.checkedAt) : liveErr ? "down" : "..."}
           </span>
         </div>
       </div>
@@ -1957,12 +1808,10 @@ function Screener() {
           <option value="rev:asc">Reviews low to high</option>
           <option value="rating:desc">Stars high to low</option>
           <option value="rating:asc">Stars low to high</option>
-          <option value="views:desc">Most popular</option>
-          <option value="views:asc">Least popular (best odds)</option>
           <option value="listed:asc">Newest listed</option>
           <option value="dist:asc">Nearest first</option>
           <option value="name:asc">Name A to Z</option>
-          {!["rev:desc","rev:asc","rating:desc","rating:asc","views:desc","views:asc","listed:asc","dist:asc","name:asc"].includes(`${sort.key}:${sort.dir}`) && (
+          {!["rev:desc","rev:asc","rating:desc","rating:asc","listed:asc","dist:asc","name:asc"].includes(`${sort.key}:${sort.dir}`) && (
             <option value={`${sort.key}:${sort.dir}`}>Column sort</option>
           )}
         </select>
@@ -2017,11 +1866,11 @@ function Screener() {
                 if (e.key === "Escape") { setEditRows(false); }
               }}
               onBlur={() => { const v = parseInt(rowDraft, 10); setAdminRows(Number.isFinite(v) && v > 0 ? v : null); setEditRows(false); }}
-              aria-label="Number of rows to generate" />
+              aria-label="Cap the visible rows" />
           ) : admin ? (
             <button className="statEdit" style={S.statEdit}
               onClick={() => { setRowDraft(String(rows.length)); setEditRows(true); }}
-              title="Click to set how many rows to generate">
+              title="Click to cap how many rows of the real crawl render">
               {rows.length}<span style={{ color: FAINT, marginLeft: 4, fontFamily: mono, fontSize: 9 }}>edit</span>
             </button>
           ) : (
@@ -2068,15 +1917,15 @@ function Screener() {
               <span className="busyDot" /> {busy === "loading" ? "Loading cache" : "Indexing"}
             </span>
           )}
-          <button className={`cacheTag`} style={{ ...S.cacheTag, ...(admin && (rtOn || fresh.length) ? { color: GREEN } : null) }} aria-describedby={admin ? undefined : "rt-pop"}
+          <button className={`cacheTag`} style={{ ...S.cacheTag, ...(admin && rtOn ? { color: GREEN } : null) }} aria-describedby={admin ? undefined : "rt-pop"}
             onClick={(e) => {
               if (admin) { setRtOn(!rtOn); return; }
               openUnlimited(e.currentTarget, { title: "Real-time data", body: FEATURES["Real-time data"] });
             }}>
             {admin && rtOn ? `${cityTag} live, real-time`
-              : admin && fresh.length ? `${cityTag} cache, updated just now`
-              : live ? <>{cityTag} live ({live.source.includes("Google") ? "OSM + Google" : "OSM"}), checked {agoLabel(live.checkedAt)} {showLocks && <Lock />}</>
-              : <>SF cache, updated 6d ago {showLocks && <Lock />}</>}
+              : live ? <>{cityTag} live ({live.source.includes("Google") ? "Google" : "OSM"}), checked {agoLabel(live.checkedAt)} {showLocks && <Lock />}</>
+              : liveErr ? <>Crawl unreachable {showLocks && <Lock />}</>
+              : <>Crawling {cityTag}... {showLocks && <Lock />}</>}
           </button>
           {!admin && (
           <span id="rt-pop" className="cachePop" style={S.cachePop} role="tooltip">
@@ -2109,7 +1958,7 @@ function Screener() {
           <span style={{ color: TEXT }}><strong>{multi.size}</strong> selected</span>
           <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
             onClick={(e) => {
-              if (admin) { exportCSV(ALL_ROWS.filter((d) => multi.has(d.name))); return; }
+              if (admin) { exportCSV(pool.filter((d) => multi.has(d.name))); return; }
               openUnlimited(e.currentTarget, { title: "Export CSV", body: FEATURES["Export CSV"] });
             }}>
             Export selection {showLocks && <Lock />}
@@ -2166,7 +2015,6 @@ function Screener() {
                   <Th k="listed" label="Listed" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 72 }} />
                   <Th k="addr" label="Address" sort={sort} onSort={toggleSort} className="mCol" style={{ width: "30%" }} />
                   <Th k="status" label="Website status" sort={sort} onSort={toggleSort} style={{ width: 124 }} />
-                  <Th k="views" label="Viewing" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 74 }} />
                   <th scope="col" className="mCol" style={{ ...S.th, width: 104 }}>Phone</th>
                 </tr>
               </thead>
@@ -2174,8 +2022,20 @@ function Screener() {
                 {busy !== "idle" && <SkeletonRows n={Math.min(Math.max(rows.length || 12, 8), 16)} />}
                 {busy === "idle" && rows.length === 0 && (
                   <tr>
-                    <td colSpan={isPaid ? 9 : 8} style={{ ...S.td, padding: "26px 14px", color: MUTED, whiteSpace: "normal" }}>
-                      No matches in your free slice of {freeCap}. Clear a filter, or pull more rows from the cache below.
+                    <td colSpan={isPaid ? 8 : 7} style={{ ...S.td, padding: "26px 14px", color: MUTED, whiteSpace: "normal" }}>
+                      {liveErr ? (
+                        <>
+                          The live crawl is unreachable right now ({liveErr}). Nothing is shown rather than showing stale or invented rows.{" "}
+                          <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, display: "inline" }}
+                            onClick={() => loadLive(live ? live.lat : 37.7749, live ? live.lng : -122.4194, live ? live.city : "San Francisco, CA")}>
+                            Retry the crawl
+                          </button>
+                        </>
+                      ) : pool.length === 0 ? (
+                        <>The crawl found no qualifying no-website businesses in this area yet. Try a wider area or refresh.</>
+                      ) : (
+                        <>No matches in your free slice of {freeCap}. Clear a filter, or pull more rows from the cache below.</>
+                      )}
                     </td>
                   </tr>
                 )}
@@ -2184,8 +2044,7 @@ function Screener() {
                   const isMulti = multi.has(d.name);
                   // Key on identity, never on index: a row landing on top shifts
                   // every index below it, and an index key would remount and
-                  // re-animate the whole table each tick. name+addr is unique
-                  // across the mock cache, the 5,000 synthetic rows, and fresh.
+                  // re-animate the whole table each tick.
                   return (
                     <React.Fragment key={d.name + "|" + d.addr}>
                       <tr
@@ -2232,17 +2091,13 @@ function Screener() {
                         <td className="mCol" style={S.td}>
                           <span style={{ color: d.addr ? TEXT : FAINT }}>{d.addr || "—"}</span>
                           <span style={{ marginLeft: 8, fontSize: 10, color: MUTED }}>{d.hood}</span>
-                          {geo && (
+                          {distLabel(d) && (
                             <span style={{ marginLeft: 8, fontSize: 10, color: FAINT, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>
-                              {distMi(d).toFixed(1)} mi
+                              {distLabel(d)}
                             </span>
                           )}
                         </td>
                         <td style={S.td}><Status d={d} /></td>
-                        <td className="mCol" style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: viewersOf(d) <= 8 ? GREEN : viewersOf(d) >= 32 ? RED : MUTED }}
-                          title={viewersOf(d) <= 8 ? "Few eyes on this lead right now" : viewersOf(d) >= 32 ? "Crowded: many agencies looking" : "Moderate attention"}>
-                          {viewersOf(d)}
-                        </td>
                         <td className="mCol" style={S.td}>
                           {d.phone ? (
                             <span className={copiedName === d.name ? "phoneHit" : ""} style={S.phoneSpan}
@@ -2258,8 +2113,10 @@ function Screener() {
                           pitch; the pitch's Cancel swaps the ad back in. */}
                       {showAds && i === 11 && rows.length > 14 && (
                         <tr>
-                          <td colSpan={isPaid ? 9 : 8} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
-                            {inFeedMode === "ad" ? (
+                          <td colSpan={isPaid ? 8 : 7} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
+                            {adsLive ? (
+                              <AdSlot slot={ADS_SLOT_INFEED} minHeight={60} />
+                            ) : inFeedMode === "ad" ? (
                               <div style={{ ...S.inFeedAd, position: "relative" }}>
                                 advertisement
                                 <button
@@ -2285,8 +2142,10 @@ function Screener() {
                       )}
                       {showAds && i === 27 && rows.length > 30 && (
                         <tr>
-                          <td colSpan={isPaid ? 9 : 8} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
-                            {inFeed2 === "ad" ? (
+                          <td colSpan={isPaid ? 8 : 7} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
+                            {adsLive ? (
+                              <AdSlot slot={ADS_SLOT_INFEED2} minHeight={60} />
+                            ) : inFeed2 === "ad" ? (
                               <div style={{ ...S.inFeedAd, position: "relative" }}>
                                 advertisement
                                 <button style={S.adCancel} onClick={() => setInFeed2("pitch")} title="Close" aria-label="Close ad">Cancel</button>
@@ -2314,10 +2173,6 @@ function Screener() {
               <div style={S.mapPanel}>
                 <div style={S.mapBar}>
                   <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: MUTED }}>Working lead</span>
-                  {selBiz && <span style={{ marginLeft: "auto", ...S.viewPill }}>
-                    <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT }}>{viewersOf(selBiz)}</span>
-                    <span style={{ color: MUTED }}>viewing</span><span style={S.livePip} />
-                  </span>}
                 </div>
                 <div style={{ padding: "14px 16px" }}>
                   {!selBiz ? (
@@ -2334,7 +2189,6 @@ function Screener() {
                           <div style={S.bizSecT}>Website status</div>
                           <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: sb.c }}>{sb.label}</div>
                           <div style={{ fontSize: 10, color: MUTED, marginTop: 4, lineHeight: 1.4 }}>{sb.tip}</div>
-                          <VulnFlags d={selBiz} />
                         </div>
                         <div style={S.kvGrid}>
                           <span style={S.kvK}>Reviews</span><span style={{ ...S.kvV, fontFamily: mono }}>{selBiz.rev ?? "—"}</span>
@@ -2361,18 +2215,17 @@ function Screener() {
             </div>
           )}
 
-          {/* Trending: the cache ranked by live viewers */}
+          {/* Trending: the cache ranked by review volume */}
           {view === "trending" && (
             <div style={{ flex: "1 1 auto", minWidth: 0 }}>
               <div style={S.mapPanel}>
                 <div style={S.mapBar}>
                   <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: MUTED }}>Trending now</span>
-                  <span style={{ fontSize: 10, color: FAINT }}>Ranked by people viewing each lead. Fewer eyes means less competition.</span>
+                  <span style={{ fontSize: 10, color: FAINT }}>Ranked by Google review volume: the most-reviewed no-website leads first.</span>
                 </div>
                 <div style={{ padding: "10px 14px 20px" }}>
-                  {[...rows].sort((a, b) => viewersOf(b) - viewersOf(a)).slice(0, 30).map((d, i) => {
+                  {[...rows].sort((a, b) => (b.rev ?? -1) - (a.rev ?? -1)).slice(0, 30).map((d, i) => {
                     const sb = statusBits(d);
-                    const v = viewersOf(d);
                     return (
                       <button key={d.name} className="qItem" style={{ ...S.qItem, padding: "9px 8px" }} onClick={() => openBizPage(d)}>
                         <span style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
@@ -2385,8 +2238,8 @@ function Screener() {
                         <span style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
                           <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, color: sb.c }}>{sb.label}</span>
                           <span style={{ ...S.viewPill, minWidth: 96, justifyContent: "center" }}>
-                            <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT }}>{v}</span>
-                            <span style={{ color: MUTED }}>viewing</span>
+                            <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT }}>{d.rev ?? "\u2014"}</span>
+                            <span style={{ color: MUTED }}>reviews</span>
                           </span>
                         </span>
                       </button>
@@ -2464,17 +2317,11 @@ function Screener() {
 
               {pane.mode === "business" && selBiz && (() => {
                 const { c, label, tip } = statusBits(selBiz);
-                const watchers = viewersOf(selBiz);
                 return (
                   <>
                     <div style={{ marginBottom: 8 }}>
                       <span style={{ ...S.status, fontSize: 11.5 }}>
                         <span style={{ color: selBiz.status === "site" ? MUTED : c, fontWeight: 700 }}>{label}</span>
-                        <span style={{ ...S.viewPill, marginLeft: 10 }}>
-                          <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{watchers}</span>
-                          <span style={{ color: MUTED }}>viewing</span>
-                          <span style={S.dotPlain} />
-                        </span>
                       </span>
                       <div style={{ fontSize: 10.5, color: MUTED, marginTop: 3, lineHeight: 1.35 }}>{tip}</div>
                     </div>
@@ -2502,10 +2349,10 @@ function Screener() {
                       <span style={{ ...S.kvV, fontFamily: mono, color: selBiz.listedAgoMin != null ? GREEN : TEXT }}>Listed {listedLabel(selBiz)}</span>
                       <span style={S.kvK}>Address</span>
                       <span style={S.kvV}>{[selBiz.addr, cityOf(selBiz)].filter(Boolean).join(", ")}</span>
-                      {geo && (
+                      {distLabel(selBiz) && (
                         <>
                           <span style={S.kvK}>Distance</span>
-                          <span style={{ ...S.kvV, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>{distMi(selBiz).toFixed(1)} mi from you</span>
+                          <span style={{ ...S.kvV, fontFamily: mono, fontVariantNumeric: "tabular-nums" }}>{distLabel(selBiz)} from you</span>
                         </>
                       )}
                       <span style={S.kvK}>Phone</span>
@@ -3008,11 +2855,6 @@ function Screener() {
                       }}>
                       <Icon k="share" size={11} /> Share
                     </button>
-                    <span style={S.viewPill}>
-                      <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{viewersOf(d)}</span>
-                      <span style={{ color: MUTED }}>viewing now</span>
-                      <span style={S.livePip} />
-                    </span>
                   </div>
                   <div style={{ fontSize: 12.5, color: MUTED, marginTop: 5 }}>
                     <button className="kvLink" style={S.kvLink} onClick={() => { setBizPage(null); setCat(d.cat); }}>{d.cat}</button>
@@ -3033,7 +2875,7 @@ function Screener() {
                   ["Reviews", d.rev ?? "—", d.rev == null ? "not fetched yet" : d.rev > 150 ? "high demand" : d.rev > 60 ? "steady traffic" : "emerging"],
                   ["Years listed", ageOf(d) ?? "—", ageOf(d) != null ? `since ${sinceYearOf(d)}` : "no registry match"],
                   ["In cache", listedLabel(d), d.listedAgoMin != null ? "just crawled" : d.real ? "OSM record age" : "Jun 5 snapshot"],
-                  ...(geo ? [["Distance", `${distMi(d).toFixed(1)} mi`, `from ${geo.city}`]] : [])].map(([k, v, sub]) => (
+                  ...(distLabel(d) ? [["Distance", distLabel(d), `from ${geo.city}`]] : [])].map(([k, v, sub]) => (
                   <div key={k} style={{ ...S.bizSec, padding: "10px 12px" }}>
                     <div style={S.bizSecT}>{k}</div>
                     <div style={{ fontFamily: mono, fontSize: 19, fontWeight: 700, color: TEXT, margin: "2px 0" }}>{v}</div>
@@ -3080,7 +2922,9 @@ function Screener() {
 
                   {showAds && (<>
                   <div style={{ ...S.bizSecT, marginTop: 14 }}>Sponsored</div>
-                  {pageAdMode === "ad" ? (
+                  {adsLive ? (
+                    <AdSlot slot={ADS_SLOT_SIDEBAR} minHeight={210} />
+                  ) : pageAdMode === "ad" ? (
                     <div style={{ ...S.inFeedAd, position: "relative", height: 210 }}>
                       advertisement
                       <button style={S.adCancel} onClick={() => setPageAdMode("pitch")}
@@ -3110,12 +2954,6 @@ function Screener() {
                       : "Already has a standalone site. Lower priority for a build; a redesign or SEO angle may still fit."}
                   </div>
                   <a className="bizLink" style={{ fontSize: 11 }} href={webHref(d)} target="_blank" rel="noreferrer">Open web presence</a>
-
-                  <div style={{ ...S.bizSecT, marginTop: 14 }}>Vulnerability flags</div>
-                  <div style={{ fontSize: 10.5, color: MUTED, lineHeight: 1.5, marginBottom: 2 }}>
-                    What their current presence cannot do. Hover any flag for the pitch.
-                  </div>
-                  <VulnFlags d={d} />
 
                   <div style={{ ...S.bizSecT, marginTop: 14 }}>Recommended AI prompt <span style={S.proTag}>PRO</span></div>
                   <div style={{ position: "relative" }}>
@@ -3174,7 +3012,9 @@ function Screener() {
           <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }}
             onClick={() => {
               setLocPrompt(null);
-              if (!authed && !admin) { setPendingLoc(true); goToLogin(); return; }
+              // locate() gates by itself: anonymous visitors outside the free
+              // city are routed to signup after detection; everyone else gets
+              // a real crawl of their surroundings.
               locate();
               flashGeo("Detecting your location and crawling the businesses around you.");
             }}>
@@ -3208,7 +3048,7 @@ function Screener() {
           </button>
           <button className="acctItem" style={S.acctItem} role="menuitem"
             onClick={() => {
-              const t = `${share.biz.name} has ${statusBits(share.biz).label.toLowerCase()} and ${share.biz.rev} Google reviews. Found on b2web.site`;
+              const t = `${share.biz.name} has ${statusBits(share.biz).label.toLowerCase()}${share.biz.rev != null ? ` and ${share.biz.rev} Google reviews` : ""}. Found on b2web.site`;
               window.open(`https://x.com/intent/tweet?text=${encodeURIComponent(t)}&url=${encodeURIComponent(bizUrl(share.biz))}`, "_blank", "noopener");
               setShare(null);
             }}>
@@ -3506,20 +3346,6 @@ function Screener() {
             ))}
           </span>
         )}
-        {admin && (
-          <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(viewersOn ? null : { color: RED, borderColor: RED }) }}
-            onClick={() => setViewersOn((v) => !v)} aria-pressed={viewersOn}
-            title="Show the viewing-now counter pinned bottom-left. Off keeps a recording clean and outlasts admin mode.">
-            VIEWERS{viewersOn ? "" : ": OFF"}
-          </button>
-        )}
-        {admin && (
-          <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(ultra ? { color: RED, borderColor: RED } : null) }}
-            onClick={() => setUltra((u) => !u)} aria-pressed={ultra}
-            title="ULTRA demo: hyper-live real-time cache, streaming new listings and fast-moving statistics">
-            LIVE{ultra ? ": ON" : ""}
-          </button>
-        )}
         <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(admin ? S.adminOn : null) }}
           onClick={() => {
             if (admin) { setAdmin(false); return; }
@@ -3585,7 +3411,7 @@ function Screener() {
                       <span style={S.kvK}>Rating</span><span style={S.kvV}>{ratingLabel(d)}★</span>
                       <span style={S.kvK}>Reviews</span><span style={S.kvV}>{d.rev ?? "—"}</span>
                       <span style={S.kvK}>Phone</span><span style={{ ...S.kvV, fontFamily: mono }}>{d.phone || "—"}</span>
-                      {geo && <><span style={S.kvK}>Distance</span><span style={S.kvV}>{distMi(d).toFixed(1)} mi</span></>}
+                      {distLabel(d) && <><span style={S.kvK}>Distance</span><span style={S.kvV}>{distLabel(d)}</span></>}
                     </div>
                   </div>
                 );
@@ -3595,16 +3421,6 @@ function Screener() {
         );
       })()}
 
-      {/* ── Current viewers (fixed, bottom-left): live social-proof tension ──
-          Admin can switch this off from the dock (VIEWERS). ── */}
-      {viewersOn && (
-        <div className="viewersDock" style={S.viewersDock} title={`People viewing the ${cityTag} cache right now`}>
-          <Icon k="user" size={12} />
-          <span style={{ fontFamily: mono, fontWeight: 700, color: TEXT, fontVariantNumeric: "tabular-nums" }}>{viewers}</span>
-          <span style={{ color: MUTED }}>viewing now</span>
-          <span style={S.livePip} />
-        </div>
-      )}
 
       {/* ── Alert toast: drops from the top center, previews a new listing ── */}
       {alertToast && (
@@ -3617,15 +3433,15 @@ function Screener() {
           <div style={{ padding: "9px 10px 11px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: TEXT }}>{alertToast.biz.name}</span>
-              <span style={{ fontSize: 10, color: FAINT, whiteSpace: "nowrap" }}>listed {alertToast.ago}m ago</span>
+              <span style={{ fontSize: 10, color: FAINT, whiteSpace: "nowrap" }}>listed {listedLabel(alertToast.biz)}</span>
             </div>
             <div style={{ fontSize: 10.5, color: MUTED, marginTop: 3 }}>
-              {alertToast.biz.cat}, {alertToast.biz.addr}, {alertToast.biz.hood}
+              {[alertToast.biz.cat, alertToast.biz.addr, alertToast.biz.hood].filter(Boolean).join(", ")}
             </div>
             <div style={{ fontSize: 10.5, marginTop: 5 }}>
               <span style={{ color: RED, fontWeight: 700, fontFamily: mono }}>No website</span>
               <span style={{ color: FAINT }}>, {alertToast.biz.rev ?? "—"} reviews, {ratingLabel(alertToast.biz)}★</span>
-              {geo && <span style={{ color: FAINT }}>, {distMi(alertToast.biz).toFixed(1)} mi</span>}
+              {distLabel(alertToast.biz) && <span style={{ color: FAINT }}>, {distLabel(alertToast.biz)}</span>}
             </div>
             <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", marginTop: 10 }}
               onClick={() => { openBizPage(alertToast.biz); setAlertToast(null); }}>
@@ -3842,41 +3658,12 @@ function SkeletonRows({ n = 12 }) {
   );
 }
 
-// ── Vulnerability flags ─────────────────────────────────────────────────────
-// For social-only leads, name exactly what the platform cannot do. This is the
-// technical ammo an agency uses the moment the owner picks up the phone.
-const VULN = {
-  NO_SEO_INDEX: "Their page barely ranks. Link aggregators and social profiles are thin, near-duplicate pages that Google will not surface for local searches like \"barber near me\".",
-  NO_CUSTOM_DOMAIN: "They do not own their address. The URL belongs to the platform, so the brand, the traffic, and the SEO equity are rented, not owned.",
-  NO_PIXEL_FOUND: "No ad-tracking pixel detected. They cannot retarget visitors, measure a campaign, or build a lookalike audience from the people who already found them.",
-  NO_BOOKING_FLOW: "No way to book or quote on the page. Every lead has to call during business hours or walk in.",
-};
-const vulnsOf = (d) => {
-  if (d.status === "none") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND", "NO_BOOKING_FLOW"];
-  if (d.status !== "third") return [];
-  const k = d.thirdKind;
-  if (k === "Linktree") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND", "NO_BOOKING_FLOW"];
-  if (k === "Instagram") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_BOOKING_FLOW"];
-  return ["NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND"]; // Facebook indexes, but rents the domain
-};
 function Spin() {
   return (
     <svg className="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth="2.4" strokeLinecap="round" style={{ verticalAlign: "-2px" }} aria-hidden="true">
       <path d="M12 3a9 9 0 1 0 9 9" />
     </svg>
-  );
-}
-
-function VulnFlags({ d }) {
-  const v = vulnsOf(d);
-  if (!v.length) return null;
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>
-      {v.map((k) => (
-        <span key={k} style={S.vuln} title={VULN[k]}>[{k}]</span>
-      ))}
-    </div>
   );
 }
 
@@ -4035,7 +3822,6 @@ const S = {
   lbNote: { flex: "1 1 240px", fontSize: 10.5, color: MUTED, lineHeight: 1.5, border: `1px solid ${LINE}`, borderRadius: 2, padding: "9px 11px", background: PANEL2 },
   lbNoteT: { fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: TEXT, marginBottom: 4 },
   busyChip: { display: "inline-flex", alignItems: "center", gap: 6, fontFamily: mono, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", color: MUTED, whiteSpace: "nowrap" },
-  vuln: { fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.4px", color: AMBER, border: `1px solid ${RULE}`, background: PANEL2, borderRadius: 2, padding: "2px 6px", cursor: "help", whiteSpace: "nowrap" },
   notifDot: { position: "absolute", top: 4, right: 5, width: 7, height: 7, borderRadius: 9, background: RED, border: `1.5px solid ${PANEL}` },
   notifPop: { position: "absolute", top: "calc(100% + 6px)", right: 0, width: 320, maxWidth: "86vw", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 62, padding: 4, display: "block", maxHeight: 380, overflowY: "auto" },
   notifHead: { display: "flex", justifyContent: "space-between", padding: "7px 8px", fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.7px", textTransform: "uppercase", color: MUTED, borderBottom: `1px solid ${LINE}` },

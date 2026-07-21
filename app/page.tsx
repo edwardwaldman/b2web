@@ -206,9 +206,15 @@ function Caret({ dir }) {
 
 function statusBits(d) {
   const m = STATUS_META[d.status] || STATUS_META.site;
-  const label = d.status === "third" ? `${d.thirdKind || "Social"} only` : m.label;
-  // Every row carries its own provenance line (source + real check date).
-  const tip = d.statusNote || "Classified from the URL on the business's listing.";
+  // An OSM record with no URL is a lead candidate, not a confirmed absence:
+  // the business may have a site OSM never recorded. Until Google or the
+  // live URL check confirms (verified), the label says what we actually
+  // know. Opening the row runs the cross-check and firms it up.
+  const unconfirmed = d.status === "none" && d.verified === false;
+  const label = d.status === "third" ? `${d.thirdKind || "Social"} only`
+    : unconfirmed ? "No URL on record" : m.label;
+  const tip = (d.statusNote || "Classified from the URL on the business's listing.")
+    + (unconfirmed ? " Open the row to cross-check its Google listing." : "");
   return { c: m.c, label, tip };
 }
 
@@ -709,22 +715,67 @@ function Screener() {
   };
 
   // Trial start: email required here; payment details are collected on
-  // Stripe. The prototype opens Stripe checkout and starts the trial at
-  // that tier.
+  // Stripe. /api/checkout creates a real subscription Checkout Session
+  // (1-day trial) and we redirect to it; the return URL is verified
+  // server-side before the tier activates. Logged-out visitors run the
+  // free signup first, remembering the plan so checkout resumes after.
+  const [checkoutBusy, setCheckoutBusy] = useState(false);
+  const startCheckout = async (plan) => {
+    if (checkoutBusy) return;
+    setCheckoutBusy(true);
+    try {
+      const r = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan, billing: upBilling, email: email || trialEmail || "" }),
+      });
+      const j = await r.json();
+      if (j && j.ok && j.url) { window.location.href = j.url; return; }
+      flashGeo(j && j.error === "stripe-not-configured"
+        ? "Payments are not configured on this deployment yet."
+        : "Could not start checkout. Try again.");
+    } catch {
+      flashGeo("Could not start checkout. Try again.");
+    } finally {
+      setCheckoutBusy(false);
+      setUp(null);
+    }
+  };
   const startTrial = (plan) => {
     if (!authed && !admin && !trialEmail.trim()) { setUpErr(true); return; }
-    // Logged-out: run the free signup first (email code), remembering the plan
-    // so checkout resumes right after. Signed-in: straight to Stripe.
     if (!authed && !admin) {
       setPendingPlan(plan);
       setUp(null);
       goToLogin();
       return;
     }
-    window.open("https://checkout.stripe.com", "_blank", "noopener");
-    if (plan) setTier(plan);
-    setUp(null);
+    startCheckout(plan);
   };
+
+  // Returning from Stripe: verify the session server-side, then activate.
+  useEffect(() => {
+    let params;
+    try { params = new URLSearchParams(window.location.search); } catch { return; }
+    const state = params.get("checkout");
+    if (!state) return;
+    const clean = () => { try { window.history.replaceState({}, "", window.location.pathname); } catch {} };
+    if (state === "cancel") { flashGeo("Checkout canceled. No charge was made."); clean(); return; }
+    const sid = params.get("session_id") || "";
+    if (state !== "success" || !sid) { clean(); return; }
+    fetch(`/api/checkout?session_id=${encodeURIComponent(sid)}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j && j.ok && j.paid && j.plan) {
+          setTier(j.plan);
+          flashGeo(`Your ${j.plan === "unlimited" ? "Unlimited" : "Starter"} trial is active.`);
+        } else {
+          flashGeo("Checkout is still processing. Refresh in a moment.");
+        }
+      })
+      .catch(() => flashGeo("Could not verify the checkout. Refresh in a moment."))
+      .finally(clean);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Distance from the located user to a business, in miles.
   const distMi = (d) => { const ll = llOf(d); return geo && ll ? hav(geo.lat, geo.lng, ll[0], ll[1]) : null; };
@@ -813,6 +864,7 @@ function Screener() {
             n.status = j.statusPatch.status;
             if (j.statusPatch.thirdKind) n.thirdKind = j.statusPatch.thirdKind; else delete n.thirdKind;
             n.statusNote = j.statusPatch.statusNote;
+            n.verified = true; // Google and/or the live URL check has spoken
           }
           n.sources = Array.from(new Set([...(x.sources || []), ...(j.sources || [])]));
           return n;
@@ -955,7 +1007,7 @@ function Screener() {
       setPendingCity(null);
     }
     if (pendingLoc) { setPendingLoc(false); locate(); flashGeo("Detecting your location and crawling the businesses around you."); } // finish the detect flow
-    if (pendingPlan) { const pl = pendingPlan; setPendingPlan(null); setTier(pl); window.open("https://checkout.stripe.com", "_blank", "noopener"); }
+    if (pendingPlan) { const pl = pendingPlan; setPendingPlan(null); startCheckout(pl); }
   };
   const doLogOut = async () => {
     if (busyAuth) return;
@@ -2107,7 +2159,6 @@ function Screener() {
                           <div style={S.bizSecT}>Website status</div>
                           <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: sb.c }}>{sb.label}</div>
                           <div style={{ fontSize: 10, color: MUTED, marginTop: 4, lineHeight: 1.4 }}>{sb.tip}</div>
-                          <VulnFlags d={selBiz} />
                         </div>
                         <div style={S.kvGrid}>
                           <span style={S.kvK}>Reviews</span><span style={{ ...S.kvV, fontFamily: mono }}>{selBiz.rev ?? "—"}</span>
@@ -2872,12 +2923,6 @@ function Screener() {
                   </div>
                   <a className="bizLink" style={{ fontSize: 11 }} href={webHref(d)} target="_blank" rel="noreferrer">Open web presence</a>
 
-                  <div style={{ ...S.bizSecT, marginTop: 14 }}>Vulnerability flags</div>
-                  <div style={{ fontSize: 10.5, color: MUTED, lineHeight: 1.5, marginBottom: 2 }}>
-                    What their current presence cannot do. Hover any flag for the pitch.
-                  </div>
-                  <VulnFlags d={d} />
-
                   <div style={{ ...S.bizSecT, marginTop: 14 }}>Recommended AI prompt <span style={S.proTag}>PRO</span></div>
                   <div style={{ position: "relative" }}>
                     <div className={admin ? "" : "blurLock"} style={{ ...S.upFeature, marginBottom: 0, fontSize: 10.5, color: MUTED, lineHeight: 1.55 }}>
@@ -2935,7 +2980,9 @@ function Screener() {
           <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }}
             onClick={() => {
               setLocPrompt(null);
-              if (!authed && !admin) { setPendingLoc(true); goToLogin(); return; }
+              // locate() gates by itself: anonymous visitors outside the free
+              // city are routed to signup after detection; everyone else gets
+              // a real crawl of their surroundings.
               locate();
               flashGeo("Detecting your location and crawling the businesses around you.");
             }}>
@@ -3579,41 +3626,12 @@ function SkeletonRows({ n = 12 }) {
   );
 }
 
-// ── Vulnerability flags ─────────────────────────────────────────────────────
-// For social-only leads, name exactly what the platform cannot do. This is the
-// technical ammo an agency uses the moment the owner picks up the phone.
-const VULN = {
-  NO_SEO_INDEX: "Their page barely ranks. Link aggregators and social profiles are thin, near-duplicate pages that Google will not surface for local searches like \"barber near me\".",
-  NO_CUSTOM_DOMAIN: "They do not own their address. The URL belongs to the platform, so the brand, the traffic, and the SEO equity are rented, not owned.",
-  NO_PIXEL_FOUND: "No ad-tracking pixel detected. They cannot retarget visitors, measure a campaign, or build a lookalike audience from the people who already found them.",
-  NO_BOOKING_FLOW: "No way to book or quote on the page. Every lead has to call during business hours or walk in.",
-};
-const vulnsOf = (d) => {
-  if (d.status === "none") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND", "NO_BOOKING_FLOW"];
-  if (d.status !== "third") return [];
-  const k = d.thirdKind;
-  if (k === "Linktree") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND", "NO_BOOKING_FLOW"];
-  if (k === "Instagram") return ["NO_SEO_INDEX", "NO_CUSTOM_DOMAIN", "NO_BOOKING_FLOW"];
-  return ["NO_CUSTOM_DOMAIN", "NO_PIXEL_FOUND"]; // Facebook indexes, but rents the domain
-};
 function Spin() {
   return (
     <svg className="spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth="2.4" strokeLinecap="round" style={{ verticalAlign: "-2px" }} aria-hidden="true">
       <path d="M12 3a9 9 0 1 0 9 9" />
     </svg>
-  );
-}
-
-function VulnFlags({ d }) {
-  const v = vulnsOf(d);
-  if (!v.length) return null;
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>
-      {v.map((k) => (
-        <span key={k} style={S.vuln} title={VULN[k]}>[{k}]</span>
-      ))}
-    </div>
   );
 }
 
@@ -3772,7 +3790,6 @@ const S = {
   lbNote: { flex: "1 1 240px", fontSize: 10.5, color: MUTED, lineHeight: 1.5, border: `1px solid ${LINE}`, borderRadius: 2, padding: "9px 11px", background: PANEL2 },
   lbNoteT: { fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.6px", textTransform: "uppercase", color: TEXT, marginBottom: 4 },
   busyChip: { display: "inline-flex", alignItems: "center", gap: 6, fontFamily: mono, fontSize: 9.5, fontWeight: 700, letterSpacing: "0.5px", textTransform: "uppercase", color: MUTED, whiteSpace: "nowrap" },
-  vuln: { fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.4px", color: AMBER, border: `1px solid ${RULE}`, background: PANEL2, borderRadius: 2, padding: "2px 6px", cursor: "help", whiteSpace: "nowrap" },
   notifDot: { position: "absolute", top: 4, right: 5, width: 7, height: 7, borderRadius: 9, background: RED, border: `1.5px solid ${PANEL}` },
   notifPop: { position: "absolute", top: "calc(100% + 6px)", right: 0, width: 320, maxWidth: "86vw", background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 62, padding: 4, display: "block", maxHeight: 380, overflowY: "auto" },
   notifHead: { display: "flex", justifyContent: "space-between", padding: "7px 8px", fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.7px", textTransform: "uppercase", color: MUTED, borderBottom: `1px solid ${LINE}` },

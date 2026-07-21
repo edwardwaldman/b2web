@@ -25,6 +25,8 @@ const OVERPASS_URLS = [
   process.env.OVERPASS_URL,
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ].filter(Boolean) as string[];
 // Google mode caches longer than free OSM mode: each crawl spends billable
 // requests, so a snapshot is reused for 30 minutes (override with
@@ -187,6 +189,11 @@ export async function GET(req: NextRequest) {
     try {
       elements = await fetchOverpass(lat, lon, radius);
     } catch (e) {
+      // Every mirror refused (public Overpass rate-limits shared hosting
+      // IPs). A stale snapshot of real data beats an empty screen.
+      if (hit) {
+        return NextResponse.json({ ...hit, rows: hit.rows.slice(0, limit), count: Math.min(hit.rows.length, limit) });
+      }
       return NextResponse.json(
         { ok: false, error: `Business data source unreachable: ${e instanceof Error ? e.message : "unknown"}` },
         { status: 502 },

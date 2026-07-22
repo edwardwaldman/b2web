@@ -33,6 +33,7 @@ interface GoogleDetail {
   phone: string | null;
   reviews: LeadReview[];
   mapsUri: string | null;
+  closed: boolean;
 }
 
 async function googleDetails(name: string, locHint: string, lat: number | null, lon: number | null): Promise<GoogleDetail | null> {
@@ -56,7 +57,7 @@ async function googleDetails(name: string, locHint: string, lat: number | null, 
         "X-Goog-FieldMask": [
           "places.id", "places.displayName", "places.rating", "places.userRatingCount",
           "places.websiteUri", "places.nationalPhoneNumber", "places.reviews",
-          "places.googleMapsUri",
+          "places.googleMapsUri", "places.businessStatus",
         ].join(","),
       },
       body: JSON.stringify(body),
@@ -86,6 +87,7 @@ async function googleDetails(name: string, locHint: string, lat: number | null, 
       phone: p.nationalPhoneNumber || null,
       reviews,
       mapsUri: p.googleMapsUri || null,
+      closed: !!p.businessStatus && p.businessStatus !== "OPERATIONAL",
     };
   } catch { return null; }
 }
@@ -196,6 +198,7 @@ export async function GET(req: NextRequest) {
     registry,
     siteCheck,
     statusPatch,
+    closed: google?.closed ?? false, // Google says the business is not operational
     sources,
     googleConfigured: !!process.env.GOOGLE_PLACES_API_KEY,
   };

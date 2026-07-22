@@ -845,6 +845,7 @@ function Screener() {
           rows, city: label || (prev && prev.city) || "your area",
           lat, lng, checkedAt: j.checkedAt, source: j.source,
           count: j.count, googleEnriched: j.googleEnriched,
+          googleConfigured: j.googleConfigured, unverified: j.unverified,
         };
       });
       return j;
@@ -876,6 +877,15 @@ function Screener() {
       .then((r) => r.json())
       .then((j) => {
         if (!j || !j.ok) return;
+        // Google says this business is closed: pull it out of the cache
+        // entirely (list, pane, and any open page). Only active leads stay.
+        if (j.closed) {
+          setLive((prev) => (prev ? { ...prev, rows: prev.rows.filter((x) => x.id !== d.id) } : prev));
+          setBizPage((bp) => (bp && bp.id === d.id ? null : bp));
+          setSelected((sel) => (sel === d.name ? null : sel));
+          flashGeo(`${d.name} is marked closed on Google — removed.`);
+          return;
+        }
         const patch = (x) => {
           if (x.id !== d.id) return x;
           const n = { ...x, enriched: true };
@@ -1990,6 +2000,16 @@ function Screener() {
               Join now
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Operator note (admin only): keyless mode can't confirm open/closed or
+          website, so results are OSM candidates until the Google key is set. */}
+      {admin && live && live.unverified && (
+        <div style={{ margin: "0 0 8px", padding: "7px 12px", border: `1px solid ${AMBER}`, borderRadius: 3, background: PANEL, fontSize: 11, color: MUTED, lineHeight: 1.5 }}>
+          <span style={{ color: AMBER, fontWeight: 700 }}>Unverified source.</span>{" "}
+          Running on OpenStreetMap, which can't confirm a business is still open or truly has no website.
+          Set <span style={{ fontFamily: mono, color: TEXT }}>GOOGLE_PLACES_API_KEY</span> in your deployment for authoritative, active-only, no-website leads.
         </div>
       )}
 

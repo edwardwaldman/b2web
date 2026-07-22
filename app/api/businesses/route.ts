@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  LeadRow, GooglePlaceLite, normalizeOverpass, mergeGoogleNearby,
+  LeadRow, GooglePlaceLite, normalizeOverpass, mergeGoogleNearby, isOpenGoogle,
   cacheGet, cacheSet,
 } from "@/lib/leads";
 
@@ -137,7 +137,7 @@ async function fetchGoogleNearby(lat: number, lon: number, radius: number): Prom
     for (const p of await one(types)) {
       const pid = p.id || p.displayName?.text || "";
       if (!pid || seen.has(pid)) continue;
-      if ((p as { businessStatus?: string }).businessStatus === "CLOSED_PERMANENTLY") continue;
+      if (!isOpenGoogle(p)) continue; // drop permanently- and temporarily-closed
       seen.add(pid);
       out.push(p);
       if (!p.websiteUri) leads += 1; // no listed URL = a lead for sure
@@ -216,7 +216,11 @@ export async function GET(req: NextRequest) {
   const payload = {
     ok: true,
     source,
+    googleConfigured: !!process.env.GOOGLE_PLACES_API_KEY,
     googleEnriched: source === "Google Places",
+    // Keyless (OSM) results are candidates: OSM cannot confirm a business is
+    // still open or truly has no website. Google mode is authoritative.
+    unverified: source !== "Google Places",
     checkedAt: checked.toISOString(),
     lat, lon, radiusM: radius,
     scanned: total,

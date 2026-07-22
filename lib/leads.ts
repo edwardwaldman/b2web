@@ -184,6 +184,31 @@ function yearFrom(v: string | undefined): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
+// Closed / vacant / disused detection for OSM elements. OSM has no single
+// "open" flag, so we read the lifecycle conventions: a primary tag valued
+// vacant/disused/etc., a lifecycle-prefixed primary tag kept beside the name
+// (disused:shop=...), explicit disused/abandoned/closed flags, an
+// opening_hours of "closed"/"off", or an end_date in the past. Anything that
+// trips these is dropped so only operating businesses reach the screener.
+const OSM_PRIMARY = ["shop", "craft", "amenity", "office", "healthcare"];
+const DEAD_VALUE = /^(vacant|no|empty|disused|abandoned|razed|demolished|closed|former)$/i;
+const DEAD_PREFIX = /^(disused|abandoned|was|removed|razed|demolished|destroyed|construction|proposed):/i;
+const TRUEISH = /^(yes|1|true)$/i;
+
+export function isClosedOsm(t: Record<string, string>): boolean {
+  for (const k of OSM_PRIMARY) if (t[k] && DEAD_VALUE.test(t[k])) return true;
+  for (const k of Object.keys(t)) {
+    if (DEAD_PREFIX.test(k) && OSM_PRIMARY.includes(k.slice(k.indexOf(":") + 1))) return true;
+  }
+  if (TRUEISH.test(t.disused || "") || TRUEISH.test(t.abandoned || "")
+    || TRUEISH.test(t.closed || "") || TRUEISH.test(t.vacant || "")) return true;
+  const oh = (t.opening_hours || "").trim().toLowerCase();
+  if (oh === "closed" || oh === "off") return true;
+  const end = yearFrom(t.end_date);
+  if (end != null && end <= new Date().getFullYear()) return true;
+  return false;
+}
+
 export function normalizeOverpass(
   elements: OverpassElement[],
   ctx: { city: string; checked?: Date },
@@ -200,6 +225,7 @@ export function normalizeOverpass(
     const rawCat = t.shop || t.craft || t.amenity || t.office || t.healthcare || "";
     if (!rawCat) continue;
     if (t.amenity && !t.shop && !t.craft && !t.office && !AMENITY_KEEP.includes(t.amenity)) continue;
+    if (isClosedOsm(t)) continue; // drop vacant / disused / permanently-closed
 
     const key = name.toLowerCase().replace(/[^a-z0-9]+/g, "");
     if (!key || seen.has(key)) continue; // collapse duplicate listings
@@ -256,6 +282,13 @@ export interface GooglePlaceLite {
   nationalPhoneNumber?: string;
   types?: string[];
   formattedAddress?: string;
+  businessStatus?: string; // "OPERATIONAL" | "CLOSED_TEMPORARILY" | "CLOSED_PERMANENTLY"
+}
+
+// Google's authoritative open/closed signal. Missing = operational (Google
+// omits the field for most open businesses).
+export function isOpenGoogle(p: { businessStatus?: string }): boolean {
+  return !p.businessStatus || p.businessStatus === "OPERATIONAL";
 }
 
 export const nameKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -277,6 +310,7 @@ export function mergeGoogleNearby(rows: LeadRow[], places: GooglePlaceLite[], ct
   for (const p of places) {
     const nm = p.displayName?.text || "";
     if (!nm) continue;
+    if (!isOpenGoogle(p)) continue; // never fold in a closed business
     const k = nameKey(nm);
     const hit = byKey.get(k);
     if (hit) {

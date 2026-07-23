@@ -518,7 +518,10 @@ function Screener() {
   const [reqOpen, setReqOpen] = useState(false);        // admin requests panel open
   const [reqData, setReqData] = useState(null);         // {requests[], count, totalRequesters}
   const [reqBusy, setReqBusy] = useState(false);
-  const [locSearch, setLocSearch] = useState("");       // admin: type any place to cache
+  const [locSearch, setLocSearch] = useState("");       // owner/ultra: place to cache or request
+  const [customLoc, setCustomLoc] = useState(null);     // {x,y} · "add custom location" input popover
+  const customLocRef = useRef(null);
+  const [notifyPopup, setNotifyPopup] = useState(null); // {label} · "you'll be notified" modal
   const [alertOn, setAlertOn] = useState(false);     // armed alert (mock)
   const [alertToast, setAlertToast] = useState(null); // {biz, ago} · dropped notification
   const alertIdx = useRef(0);
@@ -1061,6 +1064,28 @@ function Screener() {
     finally { setReqBusy(false); }
   };
 
+  // Ultra "add custom location": geocode, then load it. If it's already cached
+  // the saved data just shows; if not, the request is queued (server-side,
+  // with the user's email) and a "you'll be notified" popup confirms it.
+  const requestCustomLoc = async (q) => {
+    const query = (q || "").trim();
+    if (!query || reqBusy) return;
+    setReqBusy(true);
+    try {
+      const g = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`).then((x) => x.json());
+      const hit = g && g.ok && g.results && g.results[0];
+      if (!hit) { flashGeo(`Could not find "${query}".`); return; }
+      setGeo({ lat: hit.lat, lng: hit.lon, city: hit.label });
+      setLocCity(hit.label);
+      setSort({ key: "dist", dir: "asc" });
+      const j = await loadLive(hit.lat, hit.lon, hit.label, { fresh: admin });
+      setCustomLoc(null); setLocSearch("");
+      // Already cached -> the data is now showing. Not cached -> queued.
+      if (j && j.pending) setNotifyPopup({ label: hit.label, requests: j.requests });
+    } catch { flashGeo("Location lookup failed."); }
+    finally { setReqBusy(false); }
+  };
+
   // Admin: load the pending request queue (areas people asked for).
   const loadRequests = async () => {
     if (!adminKey) return;
@@ -1412,6 +1437,16 @@ function Screener() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [locPrompt]);
 
+  useEffect(() => {
+    if (!customLoc) return;
+    const onDoc = (e) => {
+      if (customLocRef.current && !customLocRef.current.contains(e.target) &&
+          !(e.target.closest && e.target.closest(".addCustomLink"))) setCustomLoc(null);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [customLoc]);
+
   // ── Keyboard suite ──────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e) => {
@@ -1451,6 +1486,8 @@ function Screener() {
         if (acctMenu) { setAcctMenu(false); return; }
         if (acctOpen) { setAcctOpen(false); return; }
         if (up) { setUp(null); return; }
+        if (notifyPopup) { setNotifyPopup(null); return; }
+        if (customLoc) { setCustomLoc(null); return; }
         if (locPrompt) { setLocPrompt(null); return; }
         if (authModal) { setAuthModal(null); setPendingCity(null); setPendingLoc(false); return; }
         if (adOpen) { setAdOpen(false); return; }
@@ -1940,43 +1977,42 @@ function Screener() {
 
         <span style={S.vruleSm} />
 
-        <button ref={locRef} className={`locBtn${kPulse ? " kpulse" : ""}`} style={S.locBtn}
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            const vw = window.innerWidth || 1200;
-            setLocPrompt({ x: Math.max(8, Math.min(r.left, vw - 288)), y: r.bottom + 6 });
-          }}
-          title="Find my city and sort businesses nearest first">
-          <Icon k="target" size={12} />
-          Request your location
-        </button>
+        <span style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
+          <button ref={locRef} className={`locBtn${kPulse ? " kpulse" : ""}`} style={S.locBtn}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              const vw = window.innerWidth || 1200;
+              setLocPrompt({ x: Math.max(8, Math.min(r.left, vw - 288)), y: r.bottom + 6 });
+            }}
+            title="Find my city and sort businesses nearest first">
+            <Icon k="target" size={12} />
+            Request your location
+          </button>
+          {/* Add custom location. Ultra can request/preview any place; anyone
+              else who tries is prompted to upgrade. */}
+          <button className="addCustomLink" style={S.addCustomLink}
+            onClick={(e) => {
+              if (!isUnlimited && !admin) {
+                openUnlimited(e.currentTarget, { title: "Add custom location", body: "Look up no-website businesses in any city, not just where you are. Ultra unlocks custom locations, and you're notified the moment a new area is ready." });
+                return;
+              }
+              const r = e.currentTarget.getBoundingClientRect();
+              const vw = window.innerWidth || 1200;
+              setLocSearch("");
+              setCustomLoc({ x: Math.max(8, Math.min(r.left, vw - 300)), y: r.bottom + 6 });
+            }}
+            title="Look up businesses in any city">
+            + Add custom location
+          </button>
+        </span>
 
-        {/* Admin crawls any location on demand; Ultra can request any
-            location (it's queued for the admin, who loads it once for
-            everyone). Free/Starter use geolocation only. */}
-        {(admin || isUnlimited) && (
-          <>
-            <input
-              value={locSearch}
-              onChange={(e) => setLocSearch(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") adminCacheSearch(locSearch); }}
-              placeholder={admin ? "Cache any place, e.g. Andover, MA" : "Request any place, e.g. Andover, MA"}
-              aria-label={admin ? "Cache any location" : "Request any location"}
-              style={{ ...S.select, minWidth: 200, cursor: "text" }} />
-            <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
-              disabled={reqBusy}
-              onClick={() => adminCacheSearch(locSearch)}
-              title={admin ? "Crawl this place and cache it for everyone" : "Request this place; an admin loads it for everyone"}>
-              {reqBusy ? <><Spin /> {admin ? "Crawling" : "Requesting"}</> : admin ? "Cache it" : "Request it"}
-            </button>
-            {admin && (
-              <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }}
-                onClick={() => { setReqOpen(true); loadRequests(); }}
-                title="Owner: cache places for others, see requests, manage access">
-                Owner{reqData && reqData.count ? ` (${reqData.count})` : ""}
-              </button>
-            )}
-          </>
+        {/* Owner-only: cache and preview places for everyone. */}
+        {admin && (
+          <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }}
+            onClick={() => { setReqOpen(true); loadRequests(); }}
+            title="Owner: cache places for others, see requests, manage access">
+            Owner{reqData && reqData.count ? ` (${reqData.count})` : ""}
+          </button>
         )}
         {geoMsg && <span style={{ fontSize: 10, color: AMBER, whiteSpace: "nowrap" }}>{geoMsg}</span>}
 
@@ -3201,6 +3237,42 @@ function Screener() {
       })()}
 
       {/* ── Location popover: request caching for your area ── */}
+      {/* Custom-location input (Ultra): type a place to look up / request. */}
+      {customLoc && (
+        <div ref={customLocRef} style={{ ...S.locPop, left: customLoc.x, top: customLoc.y, width: 300 }} role="dialog" aria-label="Add a custom location">
+          <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 8 }}>
+            Look up no-website businesses in any city. If it&apos;s already loaded you&apos;ll see it instantly; if not, we&apos;ll notify you when it&apos;s ready.
+          </div>
+          <input autoFocus value={locSearch} onChange={(e) => setLocSearch(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") requestCustomLoc(locSearch); if (e.key === "Escape") setCustomLoc(null); }}
+            placeholder="e.g. Andover, MA" aria-label="City or place"
+            style={{ ...S.input, width: "100%" }} />
+          <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 8, justifyContent: "center" }}
+            disabled={reqBusy} onClick={() => requestCustomLoc(locSearch)}>
+            {reqBusy ? <><Spin /> Looking up</> : "Go"}
+          </button>
+        </div>
+      )}
+
+      {/* "You'll be notified" modal for an uncached custom location. */}
+      {notifyPopup && (
+        <div style={{ ...S.overlay, zIndex: 97 }} onClick={() => setNotifyPopup(null)} role="dialog" aria-modal="true">
+          <div style={{ ...S.adModal, width: 360, textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ width: 40, height: 40, borderRadius: "50%", background: PANEL2, border: `1px solid ${BLUE}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", color: BLUE }}>
+              <Icon k="bell" size={18} />
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 6 }}>We&apos;re on it</div>
+            <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.55, marginBottom: 14 }}>
+              <strong style={{ color: TEXT }}>{notifyPopup.label}</strong> isn&apos;t loaded yet. You&apos;ll be notified here and by email the moment it&apos;s ready
+              {notifyPopup.requests > 1 ? ` — ${notifyPopup.requests} people are waiting for it.` : "."}
+            </div>
+            <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }} onClick={() => setNotifyPopup(null)}>
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
+
       {locPrompt && (
         <div ref={locPromptRef} style={{ ...S.locPop, left: locPrompt.x, top: locPrompt.y }} role="dialog" aria-label="Request your location for caching">
           <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 10 }}>
@@ -4024,6 +4096,7 @@ const S = {
   searchDrop: { position: "absolute", top: "calc(100% + 5px)", left: 0, right: 0, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 55, overflow: "hidden" },
   qItem: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${LINE}`, padding: "7px 11px", cursor: "pointer", fontFamily: ui },
   locBtn: { display: "flex", alignItems: "center", gap: 7, background: PANEL2, border: `1px solid ${RULE}`, borderRadius: 2, padding: "6px 10px", fontFamily: ui, fontSize: 11, fontWeight: 700, cursor: "pointer", color: TEXT, whiteSpace: "nowrap" },
+  addCustomLink: { background: "none", border: "none", padding: "0 2px", fontFamily: ui, fontSize: 10, fontWeight: 600, color: BLUE, cursor: "pointer", textAlign: "left", whiteSpace: "nowrap" },
   themeBtn: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, background: "transparent", border: "none", borderRadius: 2, color: MUTED, cursor: "pointer", flexShrink: 0, padding: 0 },
 
   upPop: { position: "fixed", width: 440, background: PANEL, border: `1px solid ${RULE}`, borderRadius: 3, boxShadow: "0 14px 38px var(--shadow-strong)", zIndex: 72, padding: "12px 13px" },

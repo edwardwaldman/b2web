@@ -35,12 +35,27 @@
 //     email text not null, title text, body text, area_key text,
 //     read boolean not null default false, created_at timestamptz not null default now()
 //   );
-// All tables are written only with the service-role key (server-side), so
-// leave RLS enabled and add no public policies.
+//   -- The two business-data tables hold only public info, so RLS is disabled
+//   -- and the app can persist them with the already-configured anon key
+//   -- (no extra env var). Run this to make the shared cache "save forever":
+//   alter table location_cache  disable row level security;
+//   alter table cache_requests  disable row level security;
+// The email tables (request_subscribers, notifications) keep RLS enabled and
+// therefore need SUPABASE_SERVICE_ROLE_KEY to persist; with only the anon key
+// the cache persists and notifications simply stay in-memory.
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-export const durableConfigured = !!(SUPABASE_URL && SERVICE_KEY);
+const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+// Prefer the service-role key (bypasses RLS, all tables). Fall back to the
+// anon key that's already configured, so the cache can persist with only the
+// SQL run — no new env var — as long as RLS on the cache tables permits it
+// (the provided SQL disables RLS on the two public business-data tables).
+const WRITE_KEY = SERVICE_KEY || ANON_KEY;
+export const durableConfigured = !!(SUPABASE_URL && WRITE_KEY);
+// Email/subscriber tables hold addresses, so they need the service key. With
+// only the anon key the cache persists but notifications stay in-memory.
+export const durableSecure = !!(SUPABASE_URL && SERVICE_KEY);
 
 export interface CacheRow {
   key: string;
@@ -77,8 +92,8 @@ async function sb(path: string, init: RequestInit & { prefer?: string } = {}): P
   return fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...rest,
     headers: {
-      apikey: SERVICE_KEY,
-      Authorization: `Bearer ${SERVICE_KEY}`,
+      apikey: WRITE_KEY,
+      Authorization: `Bearer ${WRITE_KEY}`,
       "Content-Type": "application/json",
       ...(prefer ? { Prefer: prefer } : {}),
       ...(headers || {}),

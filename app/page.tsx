@@ -513,6 +513,7 @@ function Screener() {
   // x-admin-key header so only the admin can trigger a billable crawl.
   const [adminKey, setAdminKey] = useState(() => { try { return localStorage.getItem("b2w-admin-key") || ""; } catch { return ""; } });
   const [adminChecking, setAdminChecking] = useState(false);
+  const [adminStatus, setAdminStatus] = useState(null); // {gateEnabled, durable, email, googleConfigured}
   const [pendingArea, setPendingArea] = useState(null); // non-admin: {label, requests} for an uncached area
   const [reqOpen, setReqOpen] = useState(false);        // admin requests panel open
   const [reqData, setReqData] = useState(null);         // {requests[], count, totalRequesters}
@@ -873,6 +874,7 @@ function Screener() {
           lat, lng, checkedAt: j.checkedAt, source: j.source,
           count: j.count, googleEnriched: j.googleEnriched,
           googleConfigured: j.googleConfigured, unverified: j.unverified,
+          leads: j.leads, padded: j.padded || 0,
         };
       });
       return j;
@@ -1030,7 +1032,7 @@ function Screener() {
       const r = await fetch("/api/admin", { headers: { "x-admin-key": pw } });
       const j = await r.json();
       if (j && j.ok && (j.admin || !j.gateEnabled)) {
-        setAdminKey(pw);
+        setAdminKey(pw); setAdminStatus(j);
         try { localStorage.setItem("b2w-admin-key", pw); } catch {}
         setAdmin(true); setAdminAsk(false); setAdminPw("");
         return true;
@@ -1282,6 +1284,15 @@ function Screener() {
       setNotifs((ns) => ns.map((n) => ({ ...n, read: true })));
     }
   };
+
+  // Owner status: whether the gate, durable cache, and email are configured.
+  // Refreshed when admin mode is on so the Owner panel shows live state.
+  useEffect(() => {
+    if (!admin) return;
+    fetch("/api/admin", adminKey ? { headers: { "x-admin-key": adminKey } } : undefined)
+      .then((r) => r.json()).then((j) => { if (j && j.ok) setAdminStatus(j); }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [admin, adminKey]);
 
   // Re-index whenever the filter or sort inputs change (skip the first paint,
   // which the load effect already covers). A short flash, long enough to read
@@ -1959,10 +1970,10 @@ function Screener() {
               {reqBusy ? <><Spin /> {admin ? "Crawling" : "Requesting"}</> : admin ? "Cache it" : "Request it"}
             </button>
             {admin && (
-              <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
+              <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }}
                 onClick={() => { setReqOpen(true); loadRequests(); }}
-                title="Areas people have requested">
-                Requests{reqData && reqData.count ? ` (${reqData.count})` : ""}
+                title="Owner: cache places for others, see requests, manage access">
+                Owner{reqData && reqData.count ? ` (${reqData.count})` : ""}
               </button>
             )}
           </>
@@ -2151,6 +2162,17 @@ function Screener() {
             Your request was logged — {pendingArea.requests === 1 ? "you're the first to ask" : `${pendingArea.requests} people have asked`} for it.
             An admin loads each area once and it stays available for everyone, so you don&apos;t have to do anything.
           </span>
+        </div>
+      )}
+
+      {/* Padding declaration: when the area is thin on real leads, the list is
+          filled out with businesses that already have a website, shown in
+          green as "Has site". Say so plainly. */}
+      {live && live.padded > 0 && !onlyLeads && (
+        <div style={{ margin: "0 0 8px", padding: "6px 12px", fontSize: 11, color: MUTED, lineHeight: 1.5 }}>
+          {live.leads} no-website {live.leads === 1 ? "lead" : "leads"} here. The other {live.padded} row{live.padded === 1 ? "" : "s"} already
+          {" "}have a website (shown as <span style={{ color: GREEN, fontWeight: 700 }}>Has site</span>) to fill out the area — toggle
+          {" "}<span style={{ color: TEXT, fontWeight: 700 }}>No website only</span> to hide them.
         </div>
       )}
 
@@ -3559,25 +3581,61 @@ function Screener() {
         </div>
       )}
 
-      {/* ── Admin: requested-area queue. Areas visitors asked for but that
-          aren't cached yet, with how many people asked. Crawl loads it once
-          for everyone. ── */}
-      {admin && reqOpen && (
+      {/* ── Owner panel: cache places for everyone, see who requested what,
+          and check that owner-only access + persistence are configured. ── */}
+      {admin && reqOpen && (() => {
+        const st = adminStatus || {};
+        const Row = ({ on, label, hint }) => (
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 11, padding: "3px 0" }}>
+            <span style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, color: on ? GREEN : RED, minWidth: 26 }}>{on ? "ON" : "OFF"}</span>
+            <span style={{ color: TEXT, fontWeight: 700 }}>{label}</span>
+            {!on && <span style={{ color: MUTED }}>— {hint}</span>}
+          </div>
+        );
+        return (
         <div style={{ ...S.overlay, zIndex: 96 }} onClick={() => setReqOpen(false)} role="dialog" aria-modal="true">
-          <div style={{ ...S.adModal, width: 480, maxHeight: "80vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ ...S.adModal, width: 520, maxHeight: "84vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
             <button className="cancelBtn" style={S.cancelBtn} onClick={() => setReqOpen(false)} aria-label="Cancel">Cancel</button>
-            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 2 }}>Requested areas</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 2 }}>Owner</div>
             <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 12 }}>
-              {reqData ? `${reqData.count} area${reqData.count === 1 ? "" : "s"} waiting, ${reqData.totalRequesters} total request${reqData.totalRequesters === 1 ? "" : "s"}.` : "Loading..."}
-              {" "}Crawling loads an area once and it stays cached for everyone.
+              You&apos;re the only one who can crawl the API. Cache a place once and it stays available for everyone else.
             </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }} disabled={reqBusy} onClick={loadRequests}>
-                {reqBusy ? <><Spin /> Refreshing</> : "Refresh list"}
+
+            {/* Cache any place for everyone */}
+            <div style={S.fLabel}>Cache a place for everyone</div>
+            <div style={{ display: "flex", gap: 6, margin: "6px 0 14px" }}>
+              <input value={locSearch} onChange={(e) => setLocSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { adminCacheSearch(locSearch); setReqOpen(false); } }}
+                placeholder="e.g. Andover, MA" aria-label="Cache a place"
+                style={{ ...S.input, flex: 1 }} />
+              <button className="btnP" style={{ ...S.priBtn, padding: "6px 14px", justifyContent: "center" }}
+                disabled={reqBusy} onClick={() => { adminCacheSearch(locSearch); setReqOpen(false); }}>
+                {reqBusy ? <><Spin /> Caching</> : "Cache it"}
               </button>
             </div>
+
+            {/* Owner access + persistence status */}
+            <div style={{ border: `1px solid ${LINE}`, borderRadius: 3, padding: "8px 11px", marginBottom: 14 }}>
+              <div style={{ ...S.fLabel, marginBottom: 4 }}>Deployment status</div>
+              <Row on={!!st.gateEnabled} label="Owner-only API" hint="set ADMIN_SECRET so only you can crawl" />
+              <Row on={!!st.durable} label="Shared cache saved for everyone" hint="set SUPABASE_SERVICE_ROLE_KEY + tables" />
+              <Row on={!!st.googleConfigured} label="Google data" hint="set GOOGLE_PLACES_API_KEY" />
+              <Row on={!!st.email} label="Email alerts to requesters" hint="set RESEND_API_KEY (in-app alerts work either way)" />
+            </div>
+
+            {/* Requested areas */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+              <span style={S.fLabel}>Requested areas{reqData ? ` (${reqData.count})` : ""}</span>
+              <button className="btnO" style={{ ...S.outBtn, padding: "3px 9px", fontSize: 10 }} disabled={reqBusy} onClick={loadRequests}>
+                {reqBusy ? <><Spin /> …</> : "Refresh"}
+              </button>
+            </div>
+            <div style={{ fontSize: 10, color: MUTED, marginBottom: 6 }}>
+              {reqData ? `${reqData.totalRequesters} total request${reqData.totalRequesters === 1 ? "" : "s"} across ${reqData.count} area${reqData.count === 1 ? "" : "s"}. ` : "Loading… "}
+              People who requested an area get notified when you load it.
+            </div>
             {reqData && reqData.requests && reqData.requests.length === 0 && (
-              <div style={{ fontSize: 11.5, color: FAINT, padding: "14px 0" }}>No pending requests. When someone opens an uncached area, it shows up here.</div>
+              <div style={{ fontSize: 11.5, color: FAINT, padding: "12px 0" }}>No pending requests. When someone opens an uncached area, it shows up here with a count.</div>
             )}
             {reqData && reqData.requests && reqData.requests.map((rq) => (
               <div key={rq.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${LINE}` }}>
@@ -3595,13 +3653,14 @@ function Screener() {
                     setReqOpen(false);
                     await loadLive(rq.lat, rq.lon, rq.label || "", { fresh: true, radiusM: rq.radius });
                   }}>
-                  Crawl for everyone
+                  Cache for everyone
                 </button>
               </div>
             ))}
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Compare drawer: Pro side-by-side of selected businesses ── */}
       {cmpActive && compare.size > 0 && (() => {

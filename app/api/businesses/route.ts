@@ -209,15 +209,22 @@ export async function GET(req: NextRequest) {
   let rows: LeadRow[] = [];
   let source = "";
   if (googleFirst) {
+    // Google is authoritative. When a key is configured we never fall back to
+    // OpenStreetMap — OSM can't tell open from closed or confirm a missing
+    // website, so it surfaces chains-with-sites as false "no website" leads.
+    // If Google is momentarily unavailable (budget spent / transient) we serve
+    // the cached snapshot; otherwise an honest empty result, never OSM.
     const places = await fetchGoogleNearby(lat, lon, radius);
     if (places.length) {
       rows = mergeGoogleNearby([], places, ctx);
       source = "Google Places";
     } else if (cachedPayload?.rows) {
       return NextResponse.json(slim(cachedPayload as { rows: LeadRow[] }));
+    } else {
+      source = "Google Places"; // scanned, no leads (or Google briefly empty)
     }
-  }
-  if (!rows.length) {
+  } else {
+    // Keyless deployments only: OpenStreetMap inventory.
     let elements;
     try {
       elements = await fetchOverpass(lat, lon, radius);
@@ -233,12 +240,19 @@ export async function GET(req: NextRequest) {
   }
 
   const total = rows.length;
-  if (!includeSites) rows = rows.filter((r) => r.status !== "site");
-
   const ord = { none: 0, third: 1, site: 2 } as const;
-  rows.sort((a, b) =>
-    ord[a.status] - ord[b.status] || (b.rev ?? -1) - (a.rev ?? -1) || a.name.localeCompare(b.name));
-  rows = rows.slice(0, MAX_ROWS);
+  const leadRows = rows.filter((r) => r.status !== "site")
+    .sort((a, b) => ord[a.status] - ord[b.status] || (b.rev ?? -1) - (a.rev ?? -1) || a.name.localeCompare(b.name));
+  const siteRows = rows.filter((r) => r.status === "site")
+    .sort((a, b) => (b.rev ?? -1) - (a.rev ?? -1) || a.name.localeCompare(b.name));
+
+  // Leads first, always. In a thin area the no-website leads are few, so the
+  // list is padded with the top has-site businesses (clearly labeled "Has
+  // site") up to PAD_TARGET so the page doesn't look empty. all=1 returns
+  // every business; the "No website only" filter hides the padding.
+  const PAD_TARGET = 20;
+  const padCount = Math.max(0, PAD_TARGET - leadRows.length);
+  rows = (includeSites ? leadRows.concat(siteRows) : leadRows.concat(siteRows.slice(0, padCount))).slice(0, MAX_ROWS);
 
   const payload = {
     ok: true,
@@ -250,9 +264,22 @@ export async function GET(req: NextRequest) {
     lat, lon, radiusM: radius,
     scanned: total,
     count: rows.length,
-    leads: rows.filter((r) => r.status !== "site").length,
+    leads: leadRows.length,
+    padded: rows.filter((r) => r.status === "site").length, // has-site fillers, declared as such
     rows,
   };
+  // Anti-clobber: never replace good saved data with a worse crawl. If the
+  // API budget ran out (empty Google result) or this fell back to OSM while a
+  // Google snapshot is already saved, keep the good one — the whole point of
+  // saving is that a bad refresh can't wipe it.
+  const prev = cachedPayload as { rows?: LeadRow[]; source?: string } | undefined;
+  const prevGood = !!(prev?.rows?.length);
+  const newEmpty = rows.length === 0;
+  const downgrade = prev?.source === "Google Places" && source !== "Google Places";
+  if (prevGood && (newEmpty || downgrade)) {
+    return NextResponse.json(slim(prev as { rows: LeadRow[] }));
+  }
+
   // Persist to the shared cache for everyone, clear this area from the request
   // queue, and notify everyone who asked for it (in-app + email).
   await setCache({ key, label: city || null, lat, lon, radius, source, payload, checked_at: checked.toISOString() });

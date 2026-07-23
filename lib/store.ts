@@ -26,7 +26,16 @@
 //     first_requested timestamptz not null default now(),
 //     last_requested timestamptz not null default now()
 //   );
-// Both tables are written only with the service-role key (server-side), so
+//   create table if not exists request_subscribers (
+//     key text, email text, notified boolean not null default false,
+//     created_at timestamptz not null default now(), primary key (key, email)
+//   );
+//   create table if not exists notifications (
+//     id bigint generated always as identity primary key,
+//     email text not null, title text, body text, area_key text,
+//     read boolean not null default false, created_at timestamptz not null default now()
+//   );
+// All tables are written only with the service-role key (server-side), so
 // leave RLS enabled and add no public policies.
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
@@ -152,6 +161,97 @@ export async function fulfillRequest(key: string): Promise<void> {
     await sb(`cache_requests?key=eq.${encodeURIComponent(key)}`, {
       method: "PATCH",
       body: JSON.stringify({ fulfilled: true }),
+    });
+  } catch { /* non-fatal */ }
+}
+
+// ── Request subscribers + notifications ─────────────────────────────────────
+// When a signed-in visitor requests an uncached area we remember their email
+// so the owner can notify them once the area is loaded.
+interface SubscriberRow { key: string; email: string; notified: boolean; created_at: string }
+export interface NotificationRow {
+  id: number | string; email: string; title: string; body: string;
+  area_key: string | null; read: boolean; created_at: string;
+}
+const memSubs: SubscriberRow[] = [];
+const memNotifs: NotificationRow[] = [];
+let memNotifId = 1;
+
+export async function subscribeRequest(key: string, email: string): Promise<void> {
+  const clean = (email || "").trim().toLowerCase();
+  if (!clean || !clean.includes("@")) return;
+  if (!durableConfigured) {
+    if (!memSubs.some((s) => s.key === key && s.email === clean)) {
+      memSubs.push({ key, email: clean, notified: false, created_at: new Date().toISOString() });
+    }
+    return;
+  }
+  try {
+    await sb("request_subscribers", {
+      method: "POST",
+      prefer: "resolution=merge-duplicates",
+      body: JSON.stringify({ key, email: clean, notified: false }),
+    });
+  } catch { /* non-fatal */ }
+}
+
+// Called when an area is crawled: create a "your area is ready" notification
+// for every subscriber that hasn't been told yet, mark them notified, and
+// return the list of emails so the caller can also send email.
+export async function notifyFulfilled(key: string, label: string | null): Promise<string[]> {
+  const title = "Your requested area is ready";
+  const body = `${label || "The area you requested"} has been loaded and is now available on b2web.site.`;
+  const now = new Date().toISOString();
+  if (!durableConfigured) {
+    const subs = memSubs.filter((s) => s.key === key && !s.notified);
+    for (const s of subs) {
+      s.notified = true;
+      memNotifs.push({ id: memNotifId++, email: s.email, title, body, area_key: key, read: false, created_at: now });
+    }
+    return subs.map((s) => s.email);
+  }
+  try {
+    const r = await sb(`request_subscribers?key=eq.${encodeURIComponent(key)}&notified=eq.false&select=email`);
+    const subs = r.ok ? ((await r.json()) as { email: string }[]) : [];
+    const emails = subs.map((s) => s.email);
+    if (emails.length) {
+      await sb("notifications", {
+        method: "POST",
+        body: JSON.stringify(emails.map((email) => ({ email, title, body, area_key: key, read: false }))),
+      });
+      await sb(`request_subscribers?key=eq.${encodeURIComponent(key)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ notified: true }),
+      });
+    }
+    return emails;
+  } catch { return []; }
+}
+
+export async function getNotifications(email: string): Promise<NotificationRow[]> {
+  const clean = (email || "").trim().toLowerCase();
+  if (!clean) return [];
+  if (!durableConfigured) {
+    return memNotifs.filter((n) => n.email === clean).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 30);
+  }
+  try {
+    const r = await sb(`notifications?email=eq.${encodeURIComponent(clean)}&order=created_at.desc&limit=30&select=*`);
+    if (!r.ok) return [];
+    return (await r.json()) as NotificationRow[];
+  } catch { return []; }
+}
+
+export async function markNotificationsRead(email: string): Promise<void> {
+  const clean = (email || "").trim().toLowerCase();
+  if (!clean) return;
+  if (!durableConfigured) {
+    for (const n of memNotifs) if (n.email === clean) n.read = true;
+    return;
+  }
+  try {
+    await sb(`notifications?email=eq.${encodeURIComponent(clean)}&read=eq.false`, {
+      method: "PATCH",
+      body: JSON.stringify({ read: true }),
     });
   } catch { /* non-fatal */ }
 }

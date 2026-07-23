@@ -17,9 +17,9 @@ import { flushProfileNow } from '@/utils/profile';
 // · NO center modals, NO accounts. The right pane is business detail only.
 //   Every locked thing (power filter chips, custom stops, cache tag, export,
 //   location) opens one anchored "Go unlimited" popover directly under the
-//   element that was clicked. It compares Starter ($20/mo, 40 calls) against
-//   Unlimited ($200/mo, unlimited calls), billed monthly or yearly (20% off),
-//   each behind a 1-day card-required free trial with empty-field validation.
+//   element that was clicked. One Pro plan ($7.99/week or $25/month), billed
+//   weekly or monthly, behind a 1-day card-required free trial with
+//   empty-field validation.
 //   Overlays: the rewarded ad, the auth modal, and the first-visit tour.
 // · Row vs cell actions: row blank space = hard select (pane). Name = Maps
 //   tab. Category/neighborhood tags = filter macros. Phone = silent copy
@@ -114,13 +114,15 @@ const BLUE_DEEP = "var(--blue-deep)";   // primary buttons
 
 // Pricing: two tiers, monthly or yearly (yearly = 20% off), 1-day free trial
 // on both (card required). "Calls" = crawl requests against the live cache.
+// One paid plan, billed weekly or monthly. The internal id stays "unlimited"
+// so every feature gate (isUnlimited) keeps working; it's shown as "Pro".
 const PLANS = [
-  { id: "starter", name: "Starter", mo: 20, calls: "40 calls / mo",
-    feats: ["Real-time crawls", "No ads", "Power filters", "CSV export"] },
-  { id: "unlimited", name: "Unlimited", mo: 200, calls: "Unlimited calls",
-    feats: ["Everything in Starter", "Search any US location", "No result caps", "Armed alerts", "Priority crawl queue"] },
+  { id: "unlimited", name: "Pro", wk: 7.99, mo: 25, calls: "Everything unlocked",
+    feats: ["Request any location", "Real-time crawls", "No ads", "No result caps", "Copy all reviews", "Email + in-app alerts"] },
 ];
-const planPrice = (pl, billing) => (billing === "yr" ? Math.round(pl.mo * 0.8) : pl.mo);
+const planPrice = (pl, billing) => (billing === "wk" ? pl.wk : pl.mo);
+const priceUnit = (billing) => (billing === "wk" ? "/week" : "/month");
+const fmtPrice = (n) => (Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`);
 
 // All business data is real and fetched at runtime from /api/businesses
 // (Google Places when a key is configured, OpenStreetMap otherwise). There is
@@ -253,8 +255,14 @@ function Status({ d }) {
   );
 }
 
-// Live rows carry their real city ("Portland, OR"); the demo rows are SF.
-const cityOf = (d) => d.city || "San Francisco, CA";
+// Default seed area. A niche, business-dense town beats a saturated metro:
+// small independent shops in a place like Lowell have far higher no-website
+// rates than downtown SF (where almost everyone already has a site). Change
+// this one constant to move the default cache anywhere.
+const DEFAULT_LOC = { lat: 42.6334, lon: -71.3162, label: "Lowell, MA" };
+
+// Live rows carry their real city ("Portland, OR").
+const cityOf = (d) => d.city || DEFAULT_LOC.label;
 const mapHref = (d) =>
   d.mapsUri || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${d.name} ${d.addr || ""} ${cityOf(d)}`)}`;
 const mapEmbed = (d) =>
@@ -308,7 +316,7 @@ const hav = (a1, o1, a2, o2) => {
 // Nearest-city detection is offline: geolocate, then pick the closest of
 // these. Enough to say "we found you near Boston" without a geocoding API.
 const CITIES = [
-  { n: "San Francisco, CA", lat: 37.7749, lng: -122.4194 }, { n: "Oakland, CA", lat: 37.8044, lng: -122.2712 },
+  { n: "Lowell, MA", lat: 42.6334, lng: -71.3162 }, { n: "San Francisco, CA", lat: 37.7749, lng: -122.4194 }, { n: "Oakland, CA", lat: 37.8044, lng: -122.2712 },
   { n: "San Jose, CA", lat: 37.3382, lng: -121.8863 }, { n: "Sacramento, CA", lat: 38.5816, lng: -121.4944 },
   { n: "Los Angeles, CA", lat: 34.0522, lng: -118.2437 }, { n: "San Diego, CA", lat: 32.7157, lng: -117.1611 },
   { n: "Las Vegas, NV", lat: 36.1699, lng: -115.1398 }, { n: "Portland, OR", lat: 45.5152, lng: -122.6784 },
@@ -412,7 +420,7 @@ function Screener() {
 
   // anchored "Go unlimited" popover: {x, y, feature?} · one popover, many triggers
   const [up, setUp] = useState(null);
-  const [upBilling, setUpBilling] = useState("mo"); // "mo" | "yr"
+  const [upBilling, setUpBilling] = useState("mo"); // "wk" | "mo"
   const [upTier, setUpTier] = useState(null);       // picked plan id, reveals trial form
   const [upErr, setUpErr] = useState(false);
   const [trialEmail, setTrialEmail] = useState(""); // checkout field while signed out; the shared email is derived now
@@ -451,6 +459,8 @@ function Screener() {
   const [notifOpen, setNotifOpen] = useState(false);
   const notifRef = useRef(null);
   const [notifSeen, setNotifSeen] = useState(false);
+  const [notifs, setNotifs] = useState([]);       // real "your area is ready" notifications
+  const [notifUnread, setNotifUnread] = useState(0);
   const [apiInfo, setApiInfo] = useState(false);
   const [leaderOpen, setLeaderOpen] = useState(false);
   const [exportMenu, setExportMenu] = useState(false);
@@ -462,7 +472,7 @@ function Screener() {
   const [agreeTos, setAgreeTos] = useState(false);   // required: ToS + privacy
   const [agreePromo, setAgreePromo] = useState(true); // optional: promo emails
   const searchInputRef = useRef(null);
-  const [locCity, setLocCity] = useState("San Francisco, CA");
+  const [locCity, setLocCity] = useState(DEFAULT_LOC.label);
   const [locating, setLocating] = useState(false);
   const [geoMsg, setGeoMsg] = useState(null);
 
@@ -608,13 +618,6 @@ function Screener() {
     () => ["All categories", ...Array.from(new Set(pool.map((d) => d.cat))).sort()],
     [pool]);
 
-  // "While you were away": the most recently listed leads in the real cache
-  // that you have not opened yet.
-  const missed = useMemo(
-    () => pool.filter((d) => d.status === "none" && !viewed.has(d.name) && listedDaysOf(d) != null)
-      .sort((a, b) => listedMin(a) - listedMin(b)).slice(0, 6),
-    [pool, viewed]);
-
   const qMatches = useMemo(() => {
     const t = q.trim().toLowerCase();
     if (!t) return [];
@@ -691,6 +694,10 @@ function Screener() {
   };
 
   const copyReviews = (d) => {
+    // No review text to copy (Google returns bodies only on the Atmosphere
+    // SKU): open the business's Google reviews instead of copying an empty
+    // dump, so the button never silently does nothing.
+    if (!reviewsOf(d).list.length) { window.open(mapHref(d), "_blank", "noopener"); return; }
     const txt = reviewsText(d);
     if (navigator.clipboard) navigator.clipboard.writeText(txt).catch(() => {});
     setCopiedRev(true);
@@ -838,7 +845,9 @@ function Screener() {
       // everyone from one crawl.
       const rowLimit = admin || isPaid ? 400 : 40;
       const qs = `lat=${lat}&lon=${lng}&radius=${opts.radiusM || 4000}` +
-        `&city=${encodeURIComponent(label || "")}&limit=${rowLimit}` + (opts.fresh ? "&fresh=1" : "");
+        `&city=${encodeURIComponent(label || "")}&limit=${rowLimit}` +
+        (opts.fresh ? "&fresh=1" : "") +
+        (email ? `&email=${encodeURIComponent(email)}` : ""); // so we can notify them when it loads
       // The admin key authorizes the billable crawl; non-admins send nothing
       // and the server only ever reads them the shared cache.
       const r = await fetch(`/api/businesses?${qs}`, adminKey ? { headers: { "x-admin-key": adminKey } } : undefined);
@@ -956,7 +965,7 @@ function Screener() {
       setLocating(false);
       setGeo({ lat, lng, city: label });
       setSort({ key: "dist", dir: "asc" });
-      if (admin || authed || label.startsWith("San Francisco")) {
+      if (admin || authed || label.startsWith(DEFAULT_LOC.label.split(",")[0])) {
         setLocCity(label);
         loadLive(lat, lng, label);
       } else {
@@ -982,8 +991,8 @@ function Screener() {
     rlHit("refresh");
     setRefreshLock(rlRetryIn("refresh"));
     setRefreshing(true);
-    const lat = live ? live.lat : 37.7749, lng = live ? live.lng : -122.4194;
-    const city = live ? live.city : "San Francisco, CA";
+    const lat = live ? live.lat : DEFAULT_LOC.lat, lng = live ? live.lng : DEFAULT_LOC.lon;
+    const city = live ? live.city : DEFAULT_LOC.label;
     loadLive(lat, lng, city, { fresh: true }).then((j) => {
       setRefreshing(false);
       if (j && live) setSort({ key: "listed", dir: "asc" });
@@ -1121,7 +1130,7 @@ function Screener() {
     const { error } = await signOut();  // SIGNED_OUT flips `authed` via context
     setBusyAuth(null);
     if (error) { flashGeo("Could not sign out. Try again."); return; }
-    setTier("free"); setAcctMenu(false); setLocCity("San Francisco, CA");
+    setTier("free"); setAcctMenu(false); setLocCity(DEFAULT_LOC.label);
     setLogoutAsk(false);
   };
 
@@ -1149,7 +1158,7 @@ function Screener() {
       setAcctOpen(false);
       doLogOut();
       setBusyAuth(null);
-      flashGeo("Account deleted. You are back on the anonymous San Francisco cache.");
+      flashGeo(`Account deleted. You are back on the anonymous ${DEFAULT_LOC.label} cache.`);
     }, 1200);
   };
   // NIST-style: length beats complexity. Accept >= 15 chars, or a passphrase
@@ -1239,15 +1248,40 @@ function Screener() {
     setAuthLock(Math.max(rlRetryIn("auth"), rlRetryIn("code")));
   }, []);
 
-  // Initial cache fetch when the page opens: the real SF slice by default
-  // (Locate swaps in the visitor's own area). If the crawl fails, the demo
-  // rows stay up and the timeout below still clears the skeleton.
+  // Initial cache fetch when the page opens: the default niche area by default
+  // (Locate swaps in the visitor's own area). If the crawl fails, an error
+  // state shows and the timeout below still clears the skeleton.
   useEffect(() => {
-    loadLive(37.7749, -122.4194, "San Francisco, CA");
+    loadLive(DEFAULT_LOC.lat, DEFAULT_LOC.lon, DEFAULT_LOC.label);
     const t = setTimeout(() => { setBusy((b) => (b === "loading" ? "idle" : b)); firstPaint.current = false; }, 15000);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Real notifications: "your requested area is ready". Fetched for the
+  // signed-in user on load and polled; the bell shows the unread count.
+  const loadNotifs = async () => {
+    if (!email) { setNotifs([]); setNotifUnread(0); return; }
+    try {
+      const j = await fetch(`/api/notifications?email=${encodeURIComponent(email)}`).then((r) => r.json());
+      if (j && j.ok) { setNotifs(j.notifications || []); setNotifUnread(j.unread || 0); }
+    } catch {}
+  };
+  useEffect(() => {
+    if (!email) { setNotifs([]); setNotifUnread(0); return; }
+    loadNotifs();
+    const iv = setInterval(loadNotifs, 60000);
+    return () => clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [email]);
+  const openNotifs = () => {
+    setNotifOpen((v) => !v); setNotifSeen(true);
+    if (!notifOpen && email && notifUnread > 0) {
+      fetch(`/api/notifications?email=${encodeURIComponent(email)}`, { method: "POST" }).catch(() => {});
+      setNotifUnread(0);
+      setNotifs((ns) => ns.map((n) => ({ ...n, read: true })));
+    }
+  };
 
   // Re-index whenever the filter or sort inputs change (skip the first paint,
   // which the load effect already covers). A short flash, long enough to read
@@ -1570,33 +1604,31 @@ function Screener() {
         <div className="topMeta" style={S.topMeta}>
           <span ref={notifRef} style={{ position: "relative", display: "inline-flex" }}>
             <button className="themeBtn" style={S.themeBtn} aria-label="Notifications"
-              title={isPaid ? "New no-website listings you missed" : "Alerts are a paid feature"}
+              title={authed ? "Alerts: when a requested area is loaded" : "Sign in to get alerts when your requested area is loaded"}
               onClick={(e) => {
-                if (!isPaid) { openUnlimited(e.currentTarget, { title: "Alerts", body: "Get notified the moment a new no-website business appears in your categories and area. Alerts ship with the paid plans." }); return; }
-                setNotifOpen((v) => !v); setNotifSeen(true);
+                if (!authed && !admin) { openUnlimited(e.currentTarget, { title: "Alerts", body: "Request any area and we'll notify you here and by email the moment it's loaded. Sign in to turn alerts on." }); return; }
+                openNotifs();
               }}>
               <Icon k="bell" size={15} />
-              {isPaid && !notifSeen && <span style={S.notifDot} aria-hidden="true" />}
+              {notifUnread > 0 && <span style={S.notifDot} aria-hidden="true" />}
             </button>
             {notifOpen && (
-              <span style={S.notifPop} role="menu" aria-label="New listings">
+              <span style={S.notifPop} role="menu" aria-label="Notifications">
                 <span style={S.notifHead}>
-                  <span>New since your last visit</span>
-                  <span style={{ color: FAINT }}>{missed.length}</span>
+                  <span>Notifications</span>
+                  <span style={{ color: FAINT }}>{notifs.length}</span>
                 </span>
-                {missed.map((d) => {
-                  const sb = statusBits(d);
-                  return (
-                    <button key={d.name} className="qItem" style={{ ...S.qItem, padding: "8px 10px" }}
-                      onClick={() => { setNotifOpen(false); openBizPage(d); }}>
-                      <span style={{ minWidth: 0 }}>
-                        <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: TEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</span>
-                        <span style={{ display: "block", fontSize: 9.5, color: MUTED }}>{d.cat}, {d.hood}, listed {listedLabel(d)}</span>
-                      </span>
-                      <span style={{ fontFamily: mono, fontSize: 9.5, fontWeight: 700, color: sb.c, flexShrink: 0 }}>{sb.label}</span>
-                    </button>
-                  );
-                })}
+                {notifs.length === 0 ? (
+                  <div style={{ padding: "12px 12px", fontSize: 10.5, color: FAINT, lineHeight: 1.5 }}>
+                    No notifications yet. Request an area and we&apos;ll tell you here and by email once it&apos;s loaded.
+                  </div>
+                ) : notifs.map((n) => (
+                  <div key={n.id} className="qItem" style={{ ...S.qItem, padding: "9px 11px", cursor: "default", display: "block" }}>
+                    <span style={{ display: "block", fontSize: 11, fontWeight: 700, color: TEXT }}>{n.title}</span>
+                    <span style={{ display: "block", fontSize: 10, color: MUTED, marginTop: 2, lineHeight: 1.4 }}>{n.body}</span>
+                    <span style={{ display: "block", fontSize: 9, color: FAINT, marginTop: 3, fontFamily: mono }}>{new Date(n.createdAt).toLocaleString()}</span>
+                  </div>
+                ))}
               </span>
             )}
           </span>
@@ -1908,28 +1940,31 @@ function Screener() {
           Request your location
         </button>
 
-        {/* Admin-only: cache any location by name, and view what people
-            have requested. These are the only ways to spend crawl budget. */}
-        {admin && (
+        {/* Admin crawls any location on demand; Ultra can request any
+            location (it's queued for the admin, who loads it once for
+            everyone). Free/Starter use geolocation only. */}
+        {(admin || isUnlimited) && (
           <>
             <input
               value={locSearch}
               onChange={(e) => setLocSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") adminCacheSearch(locSearch); }}
-              placeholder="Cache any place, e.g. Andover, MA"
-              aria-label="Admin: cache any location"
+              placeholder={admin ? "Cache any place, e.g. Andover, MA" : "Request any place, e.g. Andover, MA"}
+              aria-label={admin ? "Cache any location" : "Request any location"}
               style={{ ...S.select, minWidth: 200, cursor: "text" }} />
             <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
               disabled={reqBusy}
               onClick={() => adminCacheSearch(locSearch)}
-              title="Crawl this place and cache it for everyone">
-              {reqBusy ? <><Spin /> Crawling</> : "Cache it"}
+              title={admin ? "Crawl this place and cache it for everyone" : "Request this place; an admin loads it for everyone"}>
+              {reqBusy ? <><Spin /> {admin ? "Crawling" : "Requesting"}</> : admin ? "Cache it" : "Request it"}
             </button>
-            <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
-              onClick={() => { setReqOpen(true); loadRequests(); }}
-              title="Areas people have requested">
-              Requests{reqData && reqData.count ? ` (${reqData.count})` : ""}
-            </button>
+            {admin && (
+              <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
+                onClick={() => { setReqOpen(true); loadRequests(); }}
+                title="Areas people have requested">
+                Requests{reqData && reqData.count ? ` (${reqData.count})` : ""}
+              </button>
+            )}
           </>
         )}
         {geoMsg && <span style={{ fontSize: 10, color: AMBER, whiteSpace: "nowrap" }}>{geoMsg}</span>}
@@ -2153,7 +2188,7 @@ function Screener() {
                         <>
                           The live crawl is unreachable right now ({liveErr}). Nothing is shown rather than showing stale or invented rows.{" "}
                           <button className="paneLink" style={{ ...S.paneLink, marginTop: 0, display: "inline" }}
-                            onClick={() => loadLive(live ? live.lat : 37.7749, live ? live.lng : -122.4194, live ? live.city : "San Francisco, CA")}>
+                            onClick={() => loadLive(live ? live.lat : DEFAULT_LOC.lat, live ? live.lng : DEFAULT_LOC.lon, live ? live.city : DEFAULT_LOC.label)}>
                             Retry the crawl
                           </button>
                         </>
@@ -2256,7 +2291,7 @@ function Screener() {
                             ) : (
                               <div style={{ ...S.inFeedAd, position: "relative", textTransform: "none", letterSpacing: 0, gap: 12, fontSize: 11, color: MUTED }}>
                                 <span style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Go unlimited</span>
-                                <span>No ads, real-time data, no caps. From $20/mo with a 1-day free trial.</span>
+                                <span>No ads, real-time data, no caps. $7.99/week or $25/month, 1-day free trial.</span>
                                 <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }}
                                   onClick={(e) => openUnlimited(e.currentTarget)}>
                                   See plans
@@ -2279,7 +2314,7 @@ function Screener() {
                             ) : (
                               <div style={{ ...S.inFeedAd, position: "relative", textTransform: "none", letterSpacing: 0, gap: 12, fontSize: 11, color: MUTED }}>
                                 <span style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Go unlimited</span>
-                                <span>Unlimited leads, no ads, live crawls. Starter is $20/mo.</span>
+                                <span>Unlimited leads, no ads, live crawls. From $7.99/week.</span>
                                 <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }} onClick={(e) => openUnlimited(e.currentTarget)}>See plans</button>
                                 <button style={S.adCancel} onClick={() => setInFeed2("ad")} title="Back to the ad" aria-label="Close and show the ad again">Cancel</button>
                               </div>
@@ -2510,19 +2545,28 @@ function Screener() {
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                         <span style={S.fLabel}>Google reviews</span>
                         <span style={{ fontSize: 9.5, color: FAINT, fontFamily: mono }}>
-                          {reviewsOf(selBiz).total ?? "?"} total, {reviewsOf(selBiz).sampled} sampled
+                          {reviewsOf(selBiz).total ?? "?"} total{reviewsOf(selBiz).sampled ? `, ${reviewsOf(selBiz).sampled} sampled` : ""}
                         </span>
                       </div>
-                      <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 6, justifyContent: "center", ...(copiedRev ? { background: GREEN, borderColor: GREEN } : null) }}
-                        onClick={() => copyReviews(selBiz)}
-                        title="Copy every review to the clipboard">
-                        {copiedRev
-                          ? <>Copied {reviewsOf(selBiz).sampled} reviews to clipboard</>
-                          : <><Icon k="copy" size={12} /> Copy all reviews <span style={S.proTag}>PRO</span></>}
-                      </button>
-                      <div style={{ fontSize: 9.5, color: FAINT, marginTop: 4 }}>
-                        Pastes as plain text: author, rating, date, and body.
-                      </div>
+                      {reviewsOf(selBiz).list.length > 0 ? (
+                        <>
+                          <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 6, justifyContent: "center", ...(copiedRev ? { background: GREEN, borderColor: GREEN } : null) }}
+                            onClick={() => copyReviews(selBiz)}
+                            title="Copy every review to the clipboard">
+                            {copiedRev
+                              ? <>Copied {reviewsOf(selBiz).sampled} reviews to clipboard</>
+                              : <><Icon k="copy" size={12} /> Copy all reviews <span style={S.proTag}>PRO</span></>}
+                          </button>
+                          <div style={{ fontSize: 9.5, color: FAINT, marginTop: 4 }}>
+                            Pastes as plain text: author, rating, date, and body.
+                          </div>
+                        </>
+                      ) : (
+                        <a className="bizLink" style={{ fontSize: 11, display: "inline-block", marginTop: 6 }}
+                          href={mapHref(selBiz)} target="_blank" rel="noreferrer">
+                          See {selBiz.rev ? `all ${selBiz.rev} ` : ""}reviews on Google
+                        </a>
+                      )}
                     </div>
 
                     <div style={{ marginTop: 14 }}>
@@ -2620,12 +2664,12 @@ function Screener() {
           <div style={S.upHead}>
             <span style={{ fontWeight: 700, color: TEXT }}>Go unlimited</span>
             <span style={S.billSeg} role="tablist" aria-label="Billing period">
+              <button role="tab" aria-selected={upBilling === "wk"}
+                style={{ ...S.billBtn, ...(upBilling === "wk" ? S.billOn : null) }}
+                onClick={() => setUpBilling("wk")}>Weekly</button>
               <button role="tab" aria-selected={upBilling === "mo"}
                 style={{ ...S.billBtn, ...(upBilling === "mo" ? S.billOn : null) }}
                 onClick={() => setUpBilling("mo")}>Monthly</button>
-              <button role="tab" aria-selected={upBilling === "yr"}
-                style={{ ...S.billBtn, ...(upBilling === "yr" ? S.billOn : null) }}
-                onClick={() => setUpBilling("yr")}>Yearly -20%</button>
             </span>
           </div>
           {up.feature && (
@@ -2642,10 +2686,10 @@ function Screener() {
                 <div key={pl.id} style={{ ...S.tierCard, ...(picked ? S.tierOn : null) }}>
                   <div style={S.tierName}>{pl.name}</div>
                   <div style={S.tierPrice}>
-                    ${price}<span style={{ fontSize: 10, color: MUTED, fontWeight: 400 }}>/mo</span>
+                    {fmtPrice(price)}<span style={{ fontSize: 10, color: MUTED, fontWeight: 400 }}>{priceUnit(upBilling)}</span>
                   </div>
                   <div style={{ fontSize: 9.5, color: FAINT, fontFamily: mono }}>
-                    {upBilling === "yr" ? `billed $${price * 12} yearly` : "billed monthly"}
+                    {upBilling === "wk" ? "billed weekly" : "billed monthly"}
                   </div>
                   <div style={S.tierCalls}>{pl.calls}</div>
                   {pl.feats.map((f) => (
@@ -2676,7 +2720,7 @@ function Screener() {
                 </button>
                 <div style={{ fontSize: 10, color: MUTED, marginTop: 8, lineHeight: 1.5 }}>
                   {authed || admin
-                    ? <>Free for 1 day. Payment details are collected securely on Stripe; cancel before the trial ends and you pay nothing, otherwise it converts to {pl.name} at ${price}/mo{upBilling === "yr" ? `, billed $${price * 12} yearly` : ""}.</>
+                    ? <>Free for 1 day. Payment details are collected securely on Stripe; cancel before the trial ends and you pay nothing, otherwise it converts to {pl.name} at {fmtPrice(price)}{priceUnit(upBilling)}.</>
                     : <>First create your free account, then you'll continue to Stripe to start the {pl.name} trial. Free for 1 day; cancel anytime before it converts.</>}
                 </div>
               </div>
@@ -2802,7 +2846,7 @@ function Screener() {
         <div style={S.overlay} onClick={() => setLogoutAsk(false)} role="dialog" aria-modal="true">
           <div style={{ ...S.adModal, width: 320, textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
             <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 6 }}>Log out?</div>
-            <div style={{ fontSize: 11.5, color: MUTED, marginBottom: 16 }}>You'll drop back to the anonymous San Francisco cache.</div>
+            <div style={{ fontSize: 11.5, color: MUTED, marginBottom: 16 }}>You&apos;ll drop back to the anonymous {DEFAULT_LOC.label} cache.</div>
             <div style={{ display: "flex", gap: 8 }}>
               <button className="btnO" style={{ ...S.outBtn, flex: 1, justifyContent: "center" }} onClick={() => setLogoutAsk(false)} disabled={busyAuth === "logout"}>Stay</button>
               <button className="btnP" style={{ ...S.priBtn, flex: 1, justifyContent: "center", ...(busyAuth === "logout" ? { opacity: 0.75, cursor: "default" } : null) }} onClick={doLogOut} disabled={busyAuth === "logout"}>
@@ -3059,7 +3103,7 @@ function Screener() {
                   ) : (
                     <div style={{ ...S.inFeedAd, position: "relative", height: 210, flexDirection: "column", gap: 10, textTransform: "none", letterSpacing: 0, fontSize: 11, color: MUTED, padding: "0 18px", textAlign: "center" }}>
                       <span style={{ fontSize: 12.5, fontWeight: 700, color: TEXT }}>Go unlimited</span>
-                      <span>No ads, real-time data, no caps. From $20/mo with a 1-day free trial.</span>
+                      <span>No ads, real-time data, no caps. $7.99/week or $25/month, 1-day free trial.</span>
                       <button className="btnP" style={{ ...S.priBtn, padding: "5px 14px", fontSize: 10.5 }}
                         onClick={(e) => openUnlimited(e.currentTarget)}>
                         See plans
@@ -3104,11 +3148,17 @@ function Screener() {
                   <div style={{ fontSize: 9.5, color: FAINT, marginTop: 4 }}>Paste into Lovable, v0, or Bolt to scaffold their site.</div>
 
                   <div style={{ ...S.bizSecT, marginTop: 14 }}>Google reviews</div>
-                  <div style={{ fontSize: 10, color: FAINT, fontFamily: mono, marginBottom: 6 }}>{rv.total ?? "?"} total, {rv.sampled} sampled</div>
-                  <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", ...(copiedRev ? { background: GREEN, borderColor: GREEN } : null) }}
-                    onClick={() => copyReviews(d)}>
-                    {copiedRev ? <>Copied {rv.sampled} reviews to clipboard</> : <><Icon k="copy" size={12} /> Copy all reviews <span style={S.proTag}>PRO</span></>}
-                  </button>
+                  <div style={{ fontSize: 10, color: FAINT, fontFamily: mono, marginBottom: 6 }}>{rv.total ?? "?"} total{rv.sampled ? `, ${rv.sampled} sampled` : ""}</div>
+                  {rv.list.length > 0 ? (
+                    <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center", ...(copiedRev ? { background: GREEN, borderColor: GREEN } : null) }}
+                      onClick={() => copyReviews(d)}>
+                      {copiedRev ? <>Copied {rv.sampled} reviews to clipboard</> : <><Icon k="copy" size={12} /> Copy all reviews <span style={S.proTag}>PRO</span></>}
+                    </button>
+                  ) : (
+                    <a className="bizLink" style={{ fontSize: 11.5, display: "inline-block" }} href={mapHref(d)} target="_blank" rel="noreferrer">
+                      See {d.rev ? `all ${d.rev} ` : ""}reviews on Google
+                    </a>
+                  )}
                   {rv.list.slice(0, 3).map((r, i) => (
                     <div key={i} style={{ ...S.upFeature, marginTop: 8, marginBottom: 0 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
@@ -3148,7 +3198,7 @@ function Screener() {
           </button>
           {!authed && !admin && (
             <div style={{ fontSize: 10, color: FAINT, marginTop: 8, lineHeight: 1.5 }}>
-              Only the San Francisco cache is public. Sign up free and we will notify you the moment your area's 40 mile cache is posted.
+              Only the {DEFAULT_LOC.label} cache is public. Sign up free and we will notify you the moment your area&apos;s cache is posted.
             </div>
           )}
           {isUnlimited && (
@@ -3204,7 +3254,7 @@ function Screener() {
                   standing in for one.
                 </p>
                 <p style={S.infoP}>
-                  Free shows the shared San Francisco snapshot, ad-supported. A free account unlocks
+                  Free shows the shared {DEFAULT_LOC.label} snapshot, ad-supported. A free account unlocks
                   your own city's cached list, and the paid plans run live crawls of any city with no
                   caps. Built for web designers, SEO freelancers, and small agencies who sell websites
                   to the businesses that need them most.
@@ -3220,7 +3270,7 @@ function Screener() {
               <>
                 <h1 style={S.infoH1}>How to use B2Web.site</h1>
                 <p style={S.infoP}>
-                  Every row is a checked San Francisco business, and the website status column is the
+                  Every row is a checked {DEFAULT_LOC.label} business, and the website status column is the
                   product: red rows have no website at all. Filter by category, reviews, and stars,
                   request your location to sort nearest first, and click any row for the quick pane or
                   search to open a full business page. Copy phones with one click, pull the full review
@@ -3431,7 +3481,7 @@ function Screener() {
             <div style={S.snapWrap} aria-hidden="true">
               <div style={S.snapBar}>
                 <span style={{ color: RED, fontWeight: 700 }}>b2web</span>
-                <span style={{ marginLeft: "auto", color: FAINT }}>San Francisco, CA</span>
+                <span style={{ marginLeft: "auto", color: FAINT }}>{DEFAULT_LOC.label}</span>
               </div>
               <div style={S.snapHead}>
                 <span style={{ flex: 2 }}>Business</span><span style={{ flex: 1, textAlign: "right" }}>Reviews</span>
@@ -3451,7 +3501,7 @@ function Screener() {
               ))}
             </div>
             <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.55, maxWidth: 380 }}>
-              Every row is a San Francisco business with no real website, verified and cached. {su ? "Create an account" : "Log in"} to unlock your own city and work the leads.
+              Every row is a {DEFAULT_LOC.label} business with no real website, verified and cached. {su ? "Create an account" : "Log in"} to unlock your own city and work the leads.
             </div>
           </div>
         </div>
@@ -3655,7 +3705,7 @@ function TourOverlay({ step, onNext, onBack, onSkip, email, setEmail, onLogin, o
   const steps = [
     {
       title: "Every red row is a lead",
-      body: "This screener lists real San Francisco businesses from a checked cache. The website status column is the product: red means no website at all, amber means social only.",
+      body: `This screener lists real ${DEFAULT_LOC.label} businesses from a checked cache. The website status column is the product: red means no website at all, amber means social only.`,
       vis: (
         <div style={{ width: 380, maxWidth: "100%", border: `1px solid ${RULE}`, borderRadius: 2, background: PANEL, overflow: "hidden" }}>
           {[["Castro Classic Cuts", "No website", RED], ["Mission Cut House", "Facebook only", AMBER], ["Geary Barber Co.", "No website", RED]].map(([n, st, c], i) => (

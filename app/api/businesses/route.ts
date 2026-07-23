@@ -4,8 +4,9 @@ import {
 } from "@/lib/leads";
 import {
   areaKey, getCache, setCache, bumpRequest, fulfillRequest,
-  isAdminRequest, adminGateEnabled,
+  isAdminRequest, adminGateEnabled, subscribeRequest, notifyFulfilled,
 } from "@/lib/store";
+import { notifyByEmail } from "@/lib/email";
 
 // GET /api/businesses?lat=..&lon=..&radius=4000[&fresh=1][&all=1][&limit=40]
 //
@@ -181,6 +182,9 @@ export async function GET(req: NextRequest) {
   //    demand and crawl it once for everyone.
   if (!admin) {
     const requests = await bumpRequest({ key, label: city || null, lat, lon, radius });
+    // Remember a signed-in requester so the owner can notify them on load.
+    const email = (sp.get("email") || "").slice(0, 200);
+    if (email) await subscribeRequest(key, email);
     return NextResponse.json({
       ok: true,
       cached: false,
@@ -249,9 +253,13 @@ export async function GET(req: NextRequest) {
     leads: rows.filter((r) => r.status !== "site").length,
     rows,
   };
-  // Persist to the shared cache for everyone, and clear this area from the
-  // request queue now that it's fulfilled.
+  // Persist to the shared cache for everyone, clear this area from the request
+  // queue, and notify everyone who asked for it (in-app + email).
   await setCache({ key, label: city || null, lat, lon, radius, source, payload, checked_at: checked.toISOString() });
   await fulfillRequest(key);
+  try {
+    const emails = await notifyFulfilled(key, city || null);
+    if (emails.length) await notifyByEmail(emails, city || "your requested area", req.nextUrl.origin);
+  } catch { /* notification failures never block a crawl */ }
   return NextResponse.json({ ...payload, cached: false, rows: rows.slice(0, limit), count: Math.min(rows.length, limit) });
 }

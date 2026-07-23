@@ -52,6 +52,26 @@ function budgetLeft(): number {
   return DAILY_BUDGET - budget.used;
 }
 
+// Per-user daily cap on live crawls for the Ultra tier. The Owner (admin key)
+// is uncapped; Pro and Free never crawl at all (their requests are queued).
+// Tracked in-process per identity/day — same pragmatic model as the budget
+// above: it shapes honest traffic, and the global DAILY_BUDGET still hard-caps
+// total spend regardless of how many identities claim Ultra. Raise the cap
+// with ULTRA_DAILY_CALLS.
+const ULTRA_DAILY_CALLS = Math.max(1, parseInt(process.env.ULTRA_DAILY_CALLS || "", 10) || 2);
+const ultraDay = { day: "", by: new Map<string, number>() };
+function ultraUsed(id: string): number {
+  const today = new Date().toISOString().slice(0, 10);
+  if (ultraDay.day !== today) { ultraDay.day = today; ultraDay.by = new Map(); }
+  return ultraDay.by.get(id) || 0;
+}
+function ultraRemaining(id: string): number {
+  return Math.max(0, ULTRA_DAILY_CALLS - ultraUsed(id));
+}
+function ultraBump(id: string): void {
+  ultraDay.by.set(id, ultraUsed(id) + 1);
+}
+
 function overpassQuery(lat: number, lon: number, radius: number): string {
   const around = `(around:${radius},${lat},${lon})`;
   return `[out:json][timeout:30];
@@ -159,49 +179,80 @@ export async function GET(req: NextRequest) {
   const fresh = sp.get("fresh") === "1";
   const includeSites = sp.get("all") === "1";
   const limit = Math.min(MAX_ROWS, Math.max(1, parseInt(sp.get("limit") || "", 10) || 120));
-  const admin = isAdminRequest(req);
+  const email = (sp.get("email") || "").slice(0, 200);
+  const tier = (sp.get("tier") || "").toLowerCase();
+  // The Owner: uncapped crawls. Require BOTH a valid admin request AND an
+  // explicit tier=owner, so that on an ungated deployment (ADMIN_SECRET unset,
+  // where isAdminRequest is true for everyone) a Free/Pro visitor still can't
+  // crawl — only a client acting as the Owner sends tier=owner.
+  const owner = tier === "owner" && isAdminRequest(req);
+  // Ultra can trigger live crawls, capped per day. We identify them by their
+  // email (they're signed in); without one we can't meter, so we don't crawl.
+  const ultra = tier === "ultra" && !!email;
+  const ultraId = email.trim().toLowerCase();
+  const ultraLeft = ultra ? ultraRemaining(ultraId) : 0;
+  // Who may spend an API call on a cache miss: the Owner always, an Ultra user
+  // while under their daily cap and there's budget left. Pro/Free never do.
+  const canCrawl = owner || (ultra && ultraLeft > 0 && budgetLeft() > 0);
 
   const key = areaKey(lat, lon, radius, includeSites);
   const slim = (payload: { rows: LeadRow[]; [k: string]: unknown }) =>
     ({ ...payload, cached: true, rows: payload.rows.slice(0, limit), count: Math.min(payload.rows.length, limit) });
 
-  // 1) Shared cache. Anyone may READ it. Serve unless an admin forces a
-  //    past-cooldown re-crawl.
+  // 1) Shared cache. Anyone may READ it. Serve unless the owner forces a
+  //    past-cooldown re-crawl. A cached-but-EMPTY row (rows: []) is treated as
+  //    a miss, not a hit: older builds could persist an empty crawl, and we
+  //    never want that to stick — it should re-queue (Free/Pro) or re-crawl
+  //    (Owner/Ultra) instead of serving zero rows forever.
   const cached = await getCache(key);
   const cachedPayload = cached?.payload as { checkedAt?: string; rows?: LeadRow[] } | undefined;
-  if (cachedPayload?.rows) {
+  const hasCachedRows = !!cachedPayload?.rows?.length;
+  if (hasCachedRows) {
     const fresherThanCooldown = cached && Date.now() - Date.parse(cached.checked_at) < FRESH_COOLDOWN_MS;
-    if (!(fresh && admin && !fresherThanCooldown)) {
+    if (!(fresh && owner && !fresherThanCooldown)) {
       return NextResponse.json(slim(cachedPayload as { rows: LeadRow[] }));
     }
   }
 
-  // 2) Cache miss (or admin forced refresh). The billable crawl is
-  //    ADMIN-ONLY. A non-admin never triggers Google/Overpass — instead the
-  //    area is queued and its request counter bumped, so the admin can see
-  //    demand and crawl it once for everyone.
-  if (!admin) {
+  // 2) Cache miss (or admin forced refresh). A live crawl is billable, so it's
+  //    reserved for the Owner (uncapped) and Ultra (up to ULTRA_DAILY_CALLS a
+  //    day). Everyone else — Pro, Free, anonymous, or an Ultra user who's spent
+  //    their daily calls — has the area queued and its counter bumped, so the
+  //    owner sees demand and requesters get notified once it's loaded.
+  if (!canCrawl) {
     const requests = await bumpRequest({ key, label: city || null, lat, lon, radius });
-    // Remember a signed-in requester so the owner can notify them on load.
-    const email = (sp.get("email") || "").slice(0, 200);
+    // Remember a signed-in requester so they can be notified on load.
     if (email) await subscribeRequest(key, email);
+    // An Ultra user who's out of THEIR daily calls is a distinct case: tell
+    // them so. (If instead the global budget is spent, fall through to the
+    // generic "you'll be notified" message — they haven't used their calls.)
+    const ultraCapped = ultra && ultraLeft <= 0;
+    const message = ultraCapped
+      ? `You've used your ${ULTRA_DAILY_CALLS} live crawls for today. This area is queued — you'll be notified when it's ready, or try again tomorrow.`
+      : "This area isn't loaded yet. You'll be notified when it's ready.";
     return NextResponse.json({
       ok: true,
       cached: false,
       pending: true,
       gated: adminGateEnabled,
+      tier: tier || null,
+      ultraLimited: ultraCapped,
+      ultraRemaining: ultra ? ultraLeft : undefined,
       requests,
       label: city || null,
       lat, lon, radiusM: radius,
       rows: [],
       count: 0,
-      message: adminGateEnabled
-        ? `This area isn't cached yet. It's been requested by ${requests} ${requests === 1 ? "person" : "people"}; an admin will crawl it.`
-        : "This area isn't cached yet.",
+      message,
     }, { status: 200 });
   }
 
-  // 3) Admin path: run the crawl.
+  // 3) Crawl path (Owner or an Ultra user with calls left). Count the Ultra
+  //    user's live crawl now — the attempt spends budget whatever it returns,
+  //    so it must count even if the area turns out thin. (Owner is uncapped;
+  //    ultra and owner are mutually exclusive tiers, so this never double-counts.)
+  if (ultra) ultraBump(ultraId);
+  const ultraLeftAfter = ultra ? ultraRemaining(ultraId) : undefined;
   const checked = new Date();
   const ctx = { city: city || "Your area", checked };
   const googleFirst = !!process.env.GOOGLE_PLACES_API_KEY;
@@ -218,7 +269,7 @@ export async function GET(req: NextRequest) {
     if (places.length) {
       rows = mergeGoogleNearby([], places, ctx);
       source = "Google Places";
-    } else if (cachedPayload?.rows) {
+    } else if (hasCachedRows) {
       return NextResponse.json(slim(cachedPayload as { rows: LeadRow[] }));
     } else {
       source = "Google Places"; // scanned, no leads (or Google briefly empty)
@@ -229,7 +280,7 @@ export async function GET(req: NextRequest) {
     try {
       elements = await fetchOverpass(lat, lon, radius);
     } catch (e) {
-      if (cachedPayload?.rows) return NextResponse.json(slim(cachedPayload as { rows: LeadRow[] }));
+      if (hasCachedRows) return NextResponse.json(slim(cachedPayload as { rows: LeadRow[] }));
       return NextResponse.json(
         { ok: false, error: `Business data source unreachable: ${e instanceof Error ? e.message : "unknown"}` },
         { status: 502 },
@@ -280,6 +331,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(slim(prev as { rows: LeadRow[] }));
   }
 
+  // Never persist an EMPTY crawl. An empty Google result is almost always
+  // transient (daily budget spent, a momentary API hiccup, or a radius that's
+  // too tight) rather than a true "this area has nothing". Caching it would
+  // make the emptiness sticky — every later view would serve zero rows and no
+  // future crawl would re-attempt (the area looks "cached"). Instead we return
+  // the empty result without saving, so the next owner/Ultra crawl tries again.
+  if (newEmpty) {
+    return NextResponse.json({ ...payload, cached: false, saved: false, ultraRemaining: ultraLeftAfter,
+      message: "No businesses came back for this area just now (the data source may be rate-limited). It wasn't cached — try again shortly or widen the radius." });
+  }
+
   // Persist to the shared cache for everyone, clear this area from the request
   // queue, and notify everyone who asked for it (in-app + email).
   await setCache({ key, label: city || null, lat, lon, radius, source, payload, checked_at: checked.toISOString() });
@@ -288,5 +350,5 @@ export async function GET(req: NextRequest) {
     const emails = await notifyFulfilled(key, city || null);
     if (emails.length) await notifyByEmail(emails, city || "your requested area", req.nextUrl.origin);
   } catch { /* notification failures never block a crawl */ }
-  return NextResponse.json({ ...payload, cached: false, rows: rows.slice(0, limit), count: Math.min(rows.length, limit) });
+  return NextResponse.json({ ...payload, cached: false, ultraRemaining: ultraLeftAfter, rows: rows.slice(0, limit), count: Math.min(rows.length, limit) });
 }

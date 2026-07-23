@@ -18,6 +18,30 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
+## Tiers
+
+The screener has four tiers. See `.env.example` for the keys behind each.
+
+| Tier  | Price     | Can call the crawl API?                          |
+|-------|-----------|--------------------------------------------------|
+| Free  | —         | No. Detecting/requesting a location shows a "we'll notify you when it's ready" popup and queues the area. |
+| Pro   | $25/mo    | No live API. Requests any location; it goes to the owner's inbox and the requester is notified once it's loaded. |
+| Ultra | $200/mo   | Yes — live crawls on demand, capped at `ULTRA_DAILY_CALLS` per day (default 2). |
+| Owner | —         | Yes — uncapped. Password-gated operator/QA mode (`ADMIN_SECRET`), deliberately separate from Ultra. |
+
+The bottom-right **TEST** switch (unlocked with the owner password) previews each
+tier — Free / Pro / Ultra / Owner — with that tier's real limits, so the Ultra
+2/day cap and the Free/Pro notify flow can be tested without owner powers.
+
+## Real ads (Google AdSense)
+
+The in-feed and business-page ad spaces render **real AdSense units** for
+free-tier visitors once configured; every paid tier is ad-free. To go live, set
+`NEXT_PUBLIC_ADSENSE_CLIENT` (your `ca-pub-…` id) and at least
+`NEXT_PUBLIC_ADSENSE_SLOT_INFEED` (see `.env.example`). `/ads.txt` is served
+automatically from the client id. Until both are set, neutral placeholder boxes
+stay in the ad spaces.
+
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
 ## Learn More

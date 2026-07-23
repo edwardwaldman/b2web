@@ -12,7 +12,25 @@
 
 import { supabase } from '@/utils/supabase';
 
-export type Tier = 'free' | 'starter' | 'unlimited';
+// Real, purchasable tiers. 'owner' is NOT stored here — it's the password-
+// gated QA/operator mode in the UI, kept deliberately separate from 'ultra'.
+export type Tier = 'free' | 'pro' | 'ultra';
+// Old rows used starter/unlimited before the rename; map them forward so a
+// pre-existing profile keeps working. Anything unknown falls back to free.
+function normalizeTier(v: unknown): Tier {
+  switch (v) {
+    case 'pro':
+    case 'ultra':
+    case 'free':
+      return v;
+    case 'starter':
+      return 'pro';
+    case 'unlimited':
+      return 'ultra';
+    default:
+      return 'free';
+  }
+}
 export type Theme = 'light' | 'dark' | 'pitch';
 export type Keybinds = { phone: string; reviews: string; web: string; map: string };
 export type NotifPrefs = { newLeads: boolean; priceDrops: boolean; weekly: boolean; product: boolean };
@@ -42,7 +60,7 @@ export async function fetchProfile(userId: string): Promise<Profile | null> {
   if (!data) return null;
   return {
     id: data.id,
-    tier: data.tier as Tier,
+    tier: normalizeTier(data.tier),
     theme: data.theme as Theme,
     keybinds: data.keybinds as Keybinds,
     notifPrefs: data.notif_prefs as NotifPrefs,

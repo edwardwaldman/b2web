@@ -112,13 +112,19 @@ const GREEN = "var(--green)";       // has a standalone site / success flash
 const BLUE = "var(--blue)";        // links, focus, selection accent
 const BLUE_DEEP = "var(--blue-deep)";   // primary buttons
 
-// Pricing: two tiers, monthly or yearly (yearly = 20% off), 1-day free trial
-// on both (card required). "Calls" = crawl requests against the live cache.
-// One paid plan, billed weekly or monthly. The internal id stays "unlimited"
-// so every feature gate (isUnlimited) keeps working; it's shown as "Pro".
+// Pricing: two paid tiers, billed weekly or monthly, each behind a 1-day
+// card-required free trial. The difference is who runs the crawl:
+//  · Pro ($25/mo)   — you request any location, we crawl it for you and notify
+//                     you the moment it's ready. No live API access.
+//  · Ultra ($200/mo)— you call the API yourself: live crawls on demand, capped
+//                     at 2 per day. Everything in Pro, plus instant results.
+// The Owner tier (operator/QA) is not sold here; it's the password-gated test
+// mode and is deliberately separate from Ultra.
 const PLANS = [
-  { id: "unlimited", name: "Pro", wk: 7.99, mo: 25, calls: "Everything unlocked",
-    feats: ["Request any location", "Real-time crawls", "No ads", "No result caps", "Copy all reviews", "Email + in-app alerts"] },
+  { id: "pro", name: "Pro", wk: 7.99, mo: 25, calls: "Request any location",
+    feats: ["Request any location", "We crawl it and notify you", "No ads", "No result caps", "Copy all reviews", "Compare + saved lists"] },
+  { id: "ultra", name: "Ultra", wk: 59, mo: 200, calls: "2 live crawls / day",
+    feats: ["Everything in Pro", "Call the API yourself", "Live crawls on demand", "2 live crawls per day", "Instant results, no waiting"] },
 ];
 const planPrice = (pl, billing) => (billing === "wk" ? pl.wk : pl.mo);
 const priceUnit = (billing) => (billing === "wk" ? "/week" : "/month");
@@ -465,7 +471,8 @@ function Screener() {
   const [leaderOpen, setLeaderOpen] = useState(false);
   const [exportMenu, setExportMenu] = useState(false);
   const exportRef = useRef(null);
-  const [tier, setTier] = useState("free");        // "free" | "starter" | "unlimited"
+  const [tier, setTier] = useState("free");        // "free" | "pro" | "ultra"
+  const [ultraLeft, setUltraLeft] = useState(null); // ultra: live crawls remaining today (from the server)
   const [gateMode, setGateMode] = useState("signup"); // wall gate mode
   const [gateEmail, setGateEmail] = useState(false);  // gate: email form revealed
   const [gateConsent, setGateConsent] = useState(true);
@@ -504,7 +511,7 @@ function Screener() {
   const [radiusOn, setRadiusOn] = useState(false);
   const [radiusMi, setRadiusMi] = useState(3);
   const [rtOn, setRtOn] = useState(false);           // admin: real-time relabel
-  const [simTier, setSimTier] = useState("unlimited"); // admin: which tier to preview
+  const [simTier, setSimTier] = useState("owner"); // owner/test mode: which tier to preview (free|pro|ultra|owner)
   const [deskNote, setDeskNote] = useState(true);    // ≤768px: "use desktop" strip
   const [adminAsk, setAdminAsk] = useState(false);   // admin password modal
   const [adminPw, setAdminPw] = useState("");
@@ -571,12 +578,18 @@ function Screener() {
   useProfileSync({ theme, setTheme, keybinds, setKeybinds, notifPrefs, setNotifPrefs, setTier });
   // Effective tier the UI behaves as. Admin previews any tier via simTier; a
   // signed-in user is their own tier; anonymous is free.
+  // In owner/test mode simTier picks any of free|pro|ultra|owner so each real
+  // experience can be previewed faithfully; otherwise a signed-in user is their
+  // own tier and anonymous is free.
   const effTier = admin ? simTier : (authed ? tier : "free");
-  const isPaid = effTier === "starter" || effTier === "unlimited";
-  const isUnlimited = effTier === "unlimited";
-  const showAds = !isUnlimited;      // unlimited is ad-free; free + starter see ads
-  const showLocks = !isPaid;         // padlocks only while on the free tier
-  const noWall = admin || authed;    // real signed-in users and admin never hit the wall
+  const isOwner = effTier === "owner";   // operator: unlimited crawls, QA tools
+  const isUltra = effTier === "ultra";   // live crawls, capped 2/day
+  const isPro = effTier === "pro";       // request-only; the owner crawls for them
+  const isPaid = isPro || isUltra || isOwner;
+  const canCrawl = isUltra || isOwner;   // tiers that can trigger a live crawl
+  const showAds = effTier === "free";    // only free sees ads; every paid tier is ad-free
+  const showLocks = !isPaid;             // padlocks only while on the free tier
+  const noWall = admin || authed;        // signed-in users and owner/test mode never hit the wall
   const canCompare = isPaid;
   const cmpActive = canCompare && compareOn;
   const toggleCmp = (name) => setCompare((s0) => { const n = new Set(s0); n.has(name) ? n.delete(name) : n.add(name); return n; });
@@ -609,13 +622,13 @@ function Screener() {
     // Real crawled businesses only. Before the first fetch (or after a failed
     // one) the pool is empty and the table shows skeletons or the error state.
     if (!liveRows || !liveRows.length) return [];
-    // The anonymous free slice is capped (20 rows, 40 after the rewarded ad);
-    // paid/admin see the whole crawl. Admin's row editor caps the slice too —
+    // The free slice is capped (20 rows, 40 after the rewarded ad); every paid
+    // tier sees the whole crawl. The owner's row editor caps the slice too —
     // it never generates data.
-    let base = admin || isPaid ? liveRows : liveRows.slice(0, extra ? 40 : 20);
-    if (admin && adminRows != null) base = base.slice(0, Math.max(1, adminRows));
+    let base = isPaid ? liveRows : liveRows.slice(0, extra ? 40 : 20);
+    if (isOwner && adminRows != null) base = base.slice(0, Math.max(1, adminRows));
     return base;
-  }, [admin, adminRows, extra, liveRows, isPaid]);
+  }, [isOwner, isPaid, adminRows, extra, liveRows]);
 
   // Category options track whatever is actually in the pool.
   const catOpts = useMemo(
@@ -632,14 +645,14 @@ function Screener() {
 
   const rows = useMemo(() => {
     let r = pool.filter((d) => {
-      if (admin && multiCatOn && cats.size) { if (!cats.has(d.cat)) return false; }
+      if (isOwner && multiCatOn && cats.size) { if (!cats.has(d.cat)) return false; }
       else if (cat !== "All categories" && d.cat !== cat) return false;
       if (minRev && (d.rev ?? 0) < minRev) return false;
       if (minStars && (ratingOf(d) ?? 0) < minStars) return false;
       if (hood && d.hood !== hood) return false;
       if (onlyLeads && d.status !== "none") return false;
-      if (admin && excludeContacted && contacted.has(d.name)) return false;
-      if (admin && radiusOn && geo) {
+      if (isOwner && excludeContacted && contacted.has(d.name)) return false;
+      if (isOwner && radiusOn && geo) {
         const ll = llOf(d);
         if (!ll || hav(geo.lat, geo.lng, ll[0], ll[1]) > radiusMi) return false;
       }
@@ -660,7 +673,7 @@ function Screener() {
       return v * dirMul;
     });
     return r;
-  }, [pool, cat, minRev, minStars, hood, onlyLeads, sort, geo, excludeContacted, contacted, admin, multiCatOn, cats, radiusOn, radiusMi]);
+  }, [pool, cat, minRev, minStars, hood, onlyLeads, sort, geo, excludeContacted, contacted, isOwner, multiCatOn, cats, radiusOn, radiusMi]);
 
   const freeCap = extra ? 40 : 20;
 
@@ -813,7 +826,7 @@ function Screener() {
       .then((j) => {
         if (j && j.ok && j.paid && j.plan) {
           setTier(j.plan);
-          flashGeo(`Your ${j.plan === "unlimited" ? "Unlimited" : "Starter"} trial is active.`);
+          flashGeo(`Your ${j.plan === "ultra" ? "Ultra" : "Pro"} trial is active.`);
         } else {
           flashGeo("Checkout is still processing. Refresh in a moment.");
         }
@@ -847,21 +860,30 @@ function Screener() {
       // Only pull what this tier can show: the free slice needs 40 rows at
       // most, which keeps payloads small and lets the server cache serve
       // everyone from one crawl.
-      const rowLimit = admin || isPaid ? 400 : 40;
+      const rowLimit = isPaid ? 400 : 40;
+      // Tell the server which tier is asking so it can authorize the crawl:
+      // the Owner sends the admin key (uncapped); Ultra sends tier=ultra and
+      // the server meters it to 2/day; Pro/Free send their tier and the area
+      // is queued rather than crawled.
+      // Ultra is metered by email; when the owner tests the Ultra tier while
+      // signed out, use a stable test address so the crawl (and its 2/day cap)
+      // still exercises end to end.
+      const reqEmail = email || (admin && isUltra ? "owner-test@b2web.local" : "");
       const qs = `lat=${lat}&lon=${lng}&radius=${opts.radiusM || 4000}` +
-        `&city=${encodeURIComponent(label || "")}&limit=${rowLimit}` +
+        `&city=${encodeURIComponent(label || "")}&limit=${rowLimit}&tier=${effTier}` +
         (opts.fresh ? "&fresh=1" : "") +
-        (email ? `&email=${encodeURIComponent(email)}` : ""); // so we can notify them when it loads
-      // The admin key authorizes the billable crawl; non-admins send nothing
-      // and the server only ever reads them the shared cache.
-      const r = await fetch(`/api/businesses?${qs}`, adminKey ? { headers: { "x-admin-key": adminKey } } : undefined);
+        (reqEmail ? `&email=${encodeURIComponent(reqEmail)}` : ""); // so we can notify them when it loads
+      // The admin key authorizes an uncapped crawl and is only sent when acting
+      // as the Owner; every other tier relies on the server's tier gating.
+      const r = await fetch(`/api/businesses?${qs}`, isOwner && adminKey ? { headers: { "x-admin-key": adminKey } } : undefined);
       const j = await r.json();
       if (reqId !== liveReq.current) return null; // superseded by a newer request
       if (!j || !j.ok) throw new Error((j && j.error) || `HTTP ${r.status}`);
-      // Non-admin, area not cached: the server queued a request instead of
-      // crawling. Show the pending state, don't replace the current data.
+      if (typeof j.ultraRemaining === "number") setUltraLeft(j.ultraRemaining);
+      // Area not loaded and this tier can't crawl it: the server queued a
+      // request instead. Show the pending state, don't replace current data.
       if (j.pending) {
-        setPendingArea({ label: label || j.label || "this area", requests: j.requests || 1, gated: j.gated });
+        setPendingArea({ label: label || j.label || "this area", requests: j.requests || 1, gated: j.gated, ultraLimited: !!j.ultraLimited });
         return j;
       }
       setPendingArea(null);
@@ -972,7 +994,11 @@ function Screener() {
       setSort({ key: "dist", dir: "asc" });
       if (admin || authed || label.startsWith(DEFAULT_LOC.label.split(",")[0])) {
         setLocCity(label);
-        loadLive(lat, lng, label);
+        // Free/Pro can't crawl: loadLive queues the area and returns pending.
+        // Show the detected place, then a "we'll notify you" popup. Owner/Ultra
+        // (or a cached area) get the data instead, and no popup.
+        const j = await loadLive(lat, lng, label);
+        if (j && j.pending) setNotifyPopup({ label, requests: j.requests, ultraLimited: !!j.ultraLimited });
       } else {
         setPendingCity(label);
         setPendingCoords({ lat, lng });
@@ -985,10 +1011,9 @@ function Screener() {
     }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
   };
 
-  // Refresh (admin / paid): re-crawl the area now. Anything the crawl finds
-  // that was not in the previous snapshot floats to the top as "just listed"
-  // (loadLive marks unseen rows with listedAgoMin) and the sort flips to
-  // newest-first so it is visible immediately.
+  // Refresh (owner): re-crawl the current area now. Newly-found businesses are
+  // still tagged (loadLive marks unseen rows with listedAgoMin); with the
+  // Listed column gone we sort them to the top by Featured after the crawl.
   const refreshCache = () => {
     if (refreshing) return;
     const wait = rlRetryIn("refresh");
@@ -1000,7 +1025,7 @@ function Screener() {
     const city = live ? live.city : DEFAULT_LOC.label;
     loadLive(lat, lng, city, { fresh: true }).then((j) => {
       setRefreshing(false);
-      if (j && live) setSort({ key: "listed", dir: "asc" });
+      if (j && live) setSort({ key: "rev", dir: "desc" });
     });
   };
 
@@ -1064,9 +1089,11 @@ function Screener() {
     finally { setReqBusy(false); }
   };
 
-  // Ultra "add custom location": geocode, then load it. If it's already cached
-  // the saved data just shows; if not, the request is queued (server-side,
-  // with the user's email) and a "you'll be notified" popup confirms it.
+  // "Add custom location" (Pro + Ultra + Owner): geocode, then load it. If it's
+  // already cached the saved data shows instantly for everyone. If not:
+  //  · Owner  — force a fresh crawl.
+  //  · Ultra  — a live crawl (counts against the 2/day cap); if spent, queued.
+  //  · Pro    — queued to the owner's inbox, with a "you'll be notified" popup.
   const requestCustomLoc = async (q) => {
     const query = (q || "").trim();
     if (!query || reqBusy) return;
@@ -1078,10 +1105,10 @@ function Screener() {
       setGeo({ lat: hit.lat, lng: hit.lon, city: hit.label });
       setLocCity(hit.label);
       setSort({ key: "dist", dir: "asc" });
-      const j = await loadLive(hit.lat, hit.lon, hit.label, { fresh: admin });
+      const j = await loadLive(hit.lat, hit.lon, hit.label, { fresh: isOwner });
       setCustomLoc(null); setLocSearch("");
-      // Already cached -> the data is now showing. Not cached -> queued.
-      if (j && j.pending) setNotifyPopup({ label: hit.label, requests: j.requests });
+      // Already cached / just crawled -> data is showing. Otherwise queued.
+      if (j && j.pending) setNotifyPopup({ label: hit.label, requests: j.requests, ultraLimited: !!j.ultraLimited });
     } catch { flashGeo("Location lookup failed."); }
     finally { setReqBusy(false); }
   };
@@ -1097,11 +1124,11 @@ function Screener() {
     finally { setReqBusy(false); }
   };
 
-  // Armed alerts (admin preview): cycle through the real no-website leads in
+  // Armed alerts (owner preview): cycle through the real no-website leads in
   // the cache, nearest first once located. The toast shows the row's actual
   // recency, never an invented one.
   useEffect(() => {
-    if (!(admin && alertOn)) { setAlertToast(null); return; }
+    if (!(isOwner && alertOn)) { setAlertToast(null); return; }
     const cand = (liveRows || []).filter((d) => d.status === "none");
     if (!cand.length) { setAlertToast(null); return; }
     if (geo) {
@@ -1116,7 +1143,7 @@ function Screener() {
     const t0 = setTimeout(fire, 1200);
     const iv = setInterval(fire, 18000);
     return () => { clearTimeout(t0); clearInterval(iv); };
-  }, [admin, alertOn, geo, liveRows]);
+  }, [isOwner, alertOn, geo, liveRows]);
 
   // Each toast auto-dismisses; it is a preview, not a modal.
   useEffect(() => {
@@ -1697,10 +1724,10 @@ function Screener() {
             <Icon k={theme === "light" ? "sun" : "moon"} size={14} fill={theme === "pitch" ? "currentColor" : "none"} />
           </button>
           {admin ? (
-            <button className="tierChipBtn" style={S.tierChip}
-              title="Demo mode. Sign up to use a real account."
-              onClick={goToLogin}>
-              DEMO
+            <button className="tierChipBtn" style={{ ...S.tierChip, color: isOwner ? GREEN : BLUE }}
+              title="Owner/test mode. Use the tier switch (bottom-right) to preview each tier."
+              onClick={() => { if (isOwner) { setReqOpen(true); loadRequests(); } }}>
+              {effTier.toUpperCase()} · TEST
             </button>
           ) : authed ? (
             <button className="tierChipBtn" style={S.tierChip}
@@ -1756,10 +1783,10 @@ function Screener() {
       <div className="filtersDeck" style={S.filters}>
         <div style={S.fGroup}>
           <label style={S.fLabel} htmlFor="f-cat">Category</label>
-          <select id="f-cat" style={S.select} value={admin && multiCatOn ? "All categories" : cat}
+          <select id="f-cat" style={S.select} value={isOwner && multiCatOn ? "All categories" : cat}
             onChange={(e) => {
               const v = e.target.value;
-              if (admin && multiCatOn) {
+              if (isOwner && multiCatOn) {
                 if (v !== "All categories") setCats((s0) => { const n = new Set(s0); n.add(v); return n; });
                 return;
               }
@@ -1768,7 +1795,7 @@ function Screener() {
             {catOpts.map((c) => <option key={c}>{c}</option>)}
             {!catOpts.includes(cat) && <option key={cat}>{cat}</option>}
           </select>
-          {admin && multiCatOn && [...cats].map((c) => (
+          {isOwner && multiCatOn && [...cats].map((c) => (
             <button key={c} className="hoodChip" style={S.hoodChip}
               onClick={() => setCats((s0) => { const n = new Set(s0); n.delete(c); return n; })}
               title="Remove category">
@@ -1793,13 +1820,13 @@ function Screener() {
           <select id="f-rev" style={{ ...S.select, minWidth: 90 }} value={minRev}
             onChange={(e) => {
               if (e.target.value === "custom") {
-                if (admin) { setRevCustom(true); return; }
+                if (isOwner) { setRevCustom(true); return; }
                 openUnlimited(e.target, { title: "Custom filters", body: FEATURES["Custom filters"] }); return;
               }
               setMinRev(+e.target.value);
             }}>
             {REVIEW_STOPS.map((n) => <option key={n} value={n}>{n === 0 ? "Any" : `${n}+`}</option>)}
-            <option value="custom">{admin ? "Custom" : "Custom 🔒"}</option>
+            <option value="custom">{isOwner ? "Custom" : "Custom 🔒"}</option>
           </select>
           )}
         </div>
@@ -1820,13 +1847,13 @@ function Screener() {
           <select id="f-stars" style={{ ...S.select, minWidth: 90 }} value={minStars}
             onChange={(e) => {
               if (e.target.value === "custom") {
-                if (admin) { setStarsCustom(true); return; }
+                if (isOwner) { setStarsCustom(true); return; }
                 openUnlimited(e.target, { title: "Custom filters", body: FEATURES["Custom filters"] }); return;
               }
               setMinStars(+e.target.value);
             }}>
             {STAR_STOPS.map((n) => <option key={n} value={n}>{n === 0 ? "Any" : `${n.toFixed(1)}★`}</option>)}
-            <option value="custom">{admin ? "Custom" : "Custom 🔒"}</option>
+            <option value="custom">{isOwner ? "Custom" : "Custom 🔒"}</option>
           </select>
           )}
         </div>
@@ -1888,21 +1915,21 @@ function Screener() {
               "Compare businesses": [compareOn, () => { if (compareOn) setCompare(new Set()); setCompareOn(!compareOn); }],
             };
             const t = toggles[l];
-            const active = admin && t ? t[0] : false;
+            const active = isOwner && t ? t[0] : false;
             return (
               <button key={l} className="lockedChip" style={{ ...S.lockedChip, ...(active ? S.chipOn : null) }}
                 onClick={(e) => {
-                  if (admin && t) { t[1](); return; }
-                  if (admin) { flashGeo(l + " is on (admin mock)"); return; }
+                  if (isOwner && t) { t[1](); return; }
+                  if (isOwner) { flashGeo(l + " is on (owner)"); return; }
                   openUnlimited(e.currentTarget, { title: l, body: FEATURES[l] });
                 }}
                 aria-pressed={t ? active : undefined}
-                title={admin ? "Admin: functional" : "Paid plan filter. Click to preview"}>
-                {l}{admin && radiusOn && l === "Radius / Draw area" ? `: ${radiusMi} mi` : ""}
+                title={isOwner ? "Owner: functional" : "Paid plan filter. Click to preview"}>
+                {l}{isOwner && radiusOn && l === "Radius / Draw area" ? `: ${radiusMi} mi` : ""}
               </button>
             );
           })}
-          {admin && radiusOn && (
+          {isOwner && radiusOn && (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
               <input type="number" min="1" max="30" style={{ ...S.select, minWidth: 58, width: 58 }}
                 value={radiusMi} onChange={(e) => setRadiusMi(Math.max(1, Math.min(30, +e.target.value || 1)))}
@@ -1938,8 +1965,8 @@ function Screener() {
           </span>
         )}
         <div className="sysRead" style={{ ...S.sysRead, marginLeft: isPaid ? 0 : "auto" }} title="System status">
-          <span style={S.sysK}>Credits</span>
-          <span style={S.sysV}>{isUnlimited ? "Unlimited" : effTier === "starter" ? "40 / mo" : "0"}</span>
+          <span style={S.sysK}>Crawls</span>
+          <span style={S.sysV}>{isOwner ? "Unlimited" : isUltra ? `${ultraLeft != null ? ultraLeft : 2} / day` : isPro ? "On request" : "0"}</span>
           <span style={S.vruleSm} />
           <span style={S.sysK}>API</span>
           <button className="sysBtn" style={{ ...S.sysV, color: GREEN, background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: mono }}
@@ -1967,10 +1994,9 @@ function Screener() {
           <option value="rev:asc">Reviews low to high</option>
           <option value="rating:desc">Stars high to low</option>
           <option value="rating:asc">Stars low to high</option>
-          <option value="listed:asc">Newest listed</option>
           <option value="dist:asc">Nearest first</option>
           <option value="name:asc">Name A to Z</option>
-          {!["rev:desc","rev:asc","rating:desc","rating:asc","listed:asc","dist:asc","name:asc"].includes(`${sort.key}:${sort.dir}`) && (
+          {!["rev:desc","rev:asc","rating:desc","rating:asc","dist:asc","name:asc"].includes(`${sort.key}:${sort.dir}`) && (
             <option value={`${sort.key}:${sort.dir}`}>Column sort</option>
           )}
         </select>
@@ -1988,12 +2014,13 @@ function Screener() {
             <Icon k="target" size={12} />
             Request your location
           </button>
-          {/* Add custom location. Ultra can request/preview any place; anyone
-              else who tries is prompted to upgrade. */}
+          {/* Add custom location. Paid tiers can look up any place: Pro sends
+              a request, Ultra runs a live crawl (2/day), Owner crawls freely.
+              Free is prompted to upgrade. */}
           <button className="addCustomLink" style={S.addCustomLink}
             onClick={(e) => {
-              if (!isUnlimited && !admin) {
-                openUnlimited(e.currentTarget, { title: "Add custom location", body: "Look up no-website businesses in any city, not just where you are. Ultra unlocks custom locations, and you're notified the moment a new area is ready." });
+              if (!isPaid) {
+                openUnlimited(e.currentTarget, { title: "Add custom location", body: "Look up no-website businesses in any city, not just where you are. Pro lets you request any location (we crawl it and notify you); Ultra runs live crawls on demand." });
                 return;
               }
               const r = e.currentTarget.getBoundingClientRect();
@@ -2007,7 +2034,7 @@ function Screener() {
         </span>
 
         {/* Owner-only: cache and preview places for everyone. */}
-        {admin && (
+        {isOwner && (
           <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }}
             onClick={() => { setReqOpen(true); loadRequests(); }}
             title="Owner: cache places for others, see requests, manage access">
@@ -2043,7 +2070,7 @@ function Screener() {
 
         <div style={S.stat}>
           <span style={S.statK}>Showing</span>
-          {admin && editRows ? (
+          {isOwner && editRows ? (
             <input autoFocus type="number" min="1" style={S.rowInput}
               value={rowDraft}
               onChange={(e) => setRowDraft(e.target.value.replace(/[^0-9]/g, ""))}
@@ -2053,7 +2080,7 @@ function Screener() {
               }}
               onBlur={() => { const v = parseInt(rowDraft, 10); setAdminRows(Number.isFinite(v) && v > 0 ? v : null); setEditRows(false); }}
               aria-label="Cap the visible rows" />
-          ) : admin ? (
+          ) : isOwner ? (
             <button className="statEdit" style={S.statEdit}
               onClick={() => { setRowDraft(String(rows.length)); setEditRows(true); }}
               title="Click to cap how many rows of the real crawl render">
@@ -2085,17 +2112,17 @@ function Screener() {
 
         <span className="cacheWrap" style={S.cacheWrap}>
           <button className={`refreshBtn${refreshing ? " spin" : ""}`}
-            style={{ ...S.refreshBtn, ...(admin && refreshLock > 0 ? { color: FAINT, cursor: "not-allowed" } : null) }}
-            disabled={admin && refreshLock > 0}
+            style={{ ...S.refreshBtn, ...(isOwner && refreshLock > 0 ? { color: FAINT, cursor: "not-allowed" } : null) }}
+            disabled={isOwner && refreshLock > 0}
             onClick={(e) => {
-              if (admin) { refreshCache(); return; }
+              if (isOwner) { refreshCache(); return; }
               openUnlimited(e.currentTarget, { title: "Real-time data", body: FEATURES["Real-time data"] });
             }}
-            title={admin && refreshLock > 0 ? `Rate limited. Try again in ${rlFmt(refreshLock)}` : "Refresh: pull newly listed businesses"}
+            title={isOwner && refreshLock > 0 ? `Rate limited. Try again in ${rlFmt(refreshLock)}` : "Refresh: pull newly listed businesses"}
             aria-label="Refresh the cache">
             <Icon k="refresh" size={12} />
           </button>
-          {admin && refreshLock > 0 && (
+          {isOwner && refreshLock > 0 && (
             <span style={{ fontFamily: mono, fontSize: 9.5, color: AMBER, whiteSpace: "nowrap" }}>{rlFmt(refreshLock)}</span>
           )}
           {busy !== "idle" && (
@@ -2103,17 +2130,17 @@ function Screener() {
               <span className="busyDot" /> {busy === "loading" ? "Loading cache" : "Indexing"}
             </span>
           )}
-          <button className={`cacheTag`} style={{ ...S.cacheTag, ...(admin && rtOn ? { color: GREEN } : null) }} aria-describedby={admin ? undefined : "rt-pop"}
+          <button className={`cacheTag`} style={{ ...S.cacheTag, ...(isOwner && rtOn ? { color: GREEN } : null) }} aria-describedby={isOwner ? undefined : "rt-pop"}
             onClick={(e) => {
-              if (admin) { setRtOn(!rtOn); return; }
+              if (isOwner) { setRtOn(!rtOn); return; }
               openUnlimited(e.currentTarget, { title: "Real-time data", body: FEATURES["Real-time data"] });
             }}>
-            {admin && rtOn ? `${cityTag} live, real-time`
+            {isOwner && rtOn ? `${cityTag} live, real-time`
               : live ? <>{cityTag} live ({live.source.includes("Google") ? "Google" : "OSM"}), checked {agoLabel(live.checkedAt)} {showLocks && <Lock />}</>
               : liveErr ? <>Crawl unreachable {showLocks && <Lock />}</>
               : <>Crawling {cityTag}... {showLocks && <Lock />}</>}
           </button>
-          {!admin && (
+          {!isOwner && (
           <span id="rt-pop" className="cachePop" style={S.cachePop} role="tooltip">
             <span style={{ display: "block", fontSize: 10.5, fontWeight: 700, color: TEXT, marginBottom: 4 }}>
               Real-time data
@@ -2144,8 +2171,8 @@ function Screener() {
           <span style={{ color: TEXT }}><strong>{multi.size}</strong> selected</span>
           <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
             onClick={(e) => {
-              if (admin) { exportCSV(pool.filter((d) => multi.has(d.name))); return; }
-              openUnlimited(e.currentTarget, { title: "Export CSV", body: FEATURES["Export CSV"] });
+              if (isPaid) { exportCSV(pool.filter((d) => multi.has(d.name))); return; }
+              openUnlimited(e.currentTarget, { title: "Export CSV", body: "Export the businesses you select to a CSV for your CRM. Exports ship with the paid plans." });
             }}>
             Export selection {showLocks && <Lock />}
           </button>
@@ -2179,9 +2206,9 @@ function Screener() {
         </div>
       )}
 
-      {/* Operator note (admin only): keyless mode can't confirm open/closed or
+      {/* Operator note (owner only): keyless mode can't confirm open/closed or
           website, so results are OSM candidates until the Google key is set. */}
-      {admin && live && live.unverified && (
+      {isOwner && live && live.unverified && (
         <div style={{ margin: "0 0 8px", padding: "7px 12px", border: `1px solid ${AMBER}`, borderRadius: 3, background: PANEL, fontSize: 11, color: MUTED, lineHeight: 1.5 }}>
           <span style={{ color: AMBER, fontWeight: 700 }}>Unverified source.</span>{" "}
           Running on OpenStreetMap, which can't confirm a business is still open or truly has no website.
@@ -2189,14 +2216,16 @@ function Screener() {
         </div>
       )}
 
-      {/* Non-admin: this area isn't cached and only an admin can crawl it.
-          Their visit is counted; the admin loads it once for everyone. */}
-      {!admin && pendingArea && (
+      {/* This area isn't loaded yet and this tier can't crawl it. The visit is
+          counted and the requester is notified once the owner loads it. */}
+      {!isOwner && pendingArea && (
         <div style={{ margin: "0 0 8px", padding: "9px 13px", border: `1px solid ${BLUE}`, borderRadius: 3, background: PANEL, fontSize: 11.5, color: TEXT, lineHeight: 1.55 }}>
-          <span style={{ fontWeight: 700 }}>{pendingArea.label} isn&apos;t cached yet.</span>{" "}
+          <span style={{ fontWeight: 700 }}>{pendingArea.label} isn&apos;t loaded yet.</span>{" "}
           <span style={{ color: MUTED }}>
-            Your request was logged — {pendingArea.requests === 1 ? "you're the first to ask" : `${pendingArea.requests} people have asked`} for it.
-            An admin loads each area once and it stays available for everyone, so you don&apos;t have to do anything.
+            {pendingArea.ultraLimited
+              ? "You've used today's live crawls. "
+              : `Your request was logged — ${pendingArea.requests === 1 ? "you're the first to ask" : `${pendingArea.requests} people have asked`} for it. `}
+            You&apos;ll be notified here and by email the moment it&apos;s ready — you don&apos;t have to do anything.
           </span>
         </div>
       )}
@@ -2231,7 +2260,6 @@ function Screener() {
                   <Th k="name" label="Business" sort={sort} onSort={toggleSort} style={{ width: "26%" }} />
                   <Th k="rev" label="Reviews" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 64 }} />
                   <Th k="rating" label="Stars" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 60 }} />
-                  <Th k="listed" label="Listed" sort={sort} onSort={toggleSort} className="mCol" style={{ textAlign: "right", width: 72 }} />
                   <Th k="addr" label="Address" sort={sort} onSort={toggleSort} className="mCol" style={{ width: "30%" }} />
                   <Th k="status" label="Website status" sort={sort} onSort={toggleSort} style={{ width: 124 }} />
                   <th scope="col" className="mCol" style={{ ...S.th, width: 104 }}>Phone</th>
@@ -2241,7 +2269,7 @@ function Screener() {
                 {busy !== "idle" && <SkeletonRows n={Math.min(Math.max(rows.length || 12, 8), 16)} />}
                 {busy === "idle" && rows.length === 0 && (
                   <tr>
-                    <td colSpan={isPaid ? 8 : 7} style={{ ...S.td, padding: "26px 14px", color: MUTED, whiteSpace: "normal" }}>
+                    <td colSpan={isPaid ? 7 : 6} style={{ ...S.td, padding: "26px 14px", color: MUTED, whiteSpace: "normal" }}>
                       {liveErr ? (
                         <>
                           The live crawl is unreachable right now ({liveErr}). Nothing is shown rather than showing stale or invented rows.{" "}
@@ -2292,20 +2320,17 @@ function Screener() {
                           <button className="bizLink" style={S.bizNameBtn}
                             onClick={(e) => { e.stopPropagation(); selectRow(d); }}
                             title="Show details">{d.name}</button>
-                          <button className="tagBtn mCat" style={S.tagBtn}
-                            onClick={(e) => { e.stopPropagation(); setCat(d.cat); }}
-                            title={`Filter category: ${d.cat}`}>
+                          {/* Category is shown as data only — no click-to-filter. */}
+                          <span className="mCat" style={{ ...S.tagBtn, cursor: "default" }}
+                            title={`Category: ${d.cat}`}>
                             {d.cat}
-                          </button>
+                          </span>
                         </td>
                         <td className="mCol" style={{ ...S.td, textAlign: "right", color: d.rev ? TEXT : FAINT, fontFamily: mono }}>{d.rev ?? "—"}</td>
                         <td className="mCol" style={{ ...S.td, textAlign: "right", fontFamily: mono }}>
                           {ratingOf(d) == null
                             ? <span style={{ color: FAINT }}>—</span>
                             : <><span style={{ fontVariantNumeric: "tabular-nums", color: TEXT }}>{ratingOf(d).toFixed(1)}</span><span style={{ color: AMBER, marginLeft: 2 }}>★</span></>}
-                        </td>
-                        <td className="mCol" style={{ ...S.td, textAlign: "right", fontFamily: mono, fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: d.listedAgoMin != null ? GREEN : MUTED }}>
-                          {listedLabel(d)}
                         </td>
                         <td className="mCol" style={S.td}>
                           <span style={{ color: d.addr ? TEXT : FAINT }}>{d.addr || "—"}</span>
@@ -2332,7 +2357,7 @@ function Screener() {
                           pitch; the pitch's Cancel swaps the ad back in. */}
                       {showAds && i === 11 && rows.length > 14 && (
                         <tr>
-                          <td colSpan={isPaid ? 8 : 7} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
+                          <td colSpan={isPaid ? 7 : 6} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
                             {adsLive ? (
                               <AdSlot slot={ADS_SLOT_INFEED} minHeight={60} />
                             ) : inFeedMode === "ad" ? (
@@ -2348,8 +2373,8 @@ function Screener() {
                               </div>
                             ) : (
                               <div style={{ ...S.inFeedAd, position: "relative", textTransform: "none", letterSpacing: 0, gap: 12, fontSize: 11, color: MUTED }}>
-                                <span style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Go unlimited</span>
-                                <span>No ads, real-time data, no caps. $7.99/week or $25/month, 1-day free trial.</span>
+                                <span style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Upgrade</span>
+                                <span>No ads and no caps. Pro from $25/mo, Ultra $200/mo, 1-day free trial.</span>
                                 <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }}
                                   onClick={(e) => openUnlimited(e.currentTarget)}>
                                   See plans
@@ -2361,7 +2386,7 @@ function Screener() {
                       )}
                       {showAds && i === 27 && rows.length > 30 && (
                         <tr>
-                          <td colSpan={isPaid ? 8 : 7} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
+                          <td colSpan={isPaid ? 7 : 6} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
                             {adsLive ? (
                               <AdSlot slot={ADS_SLOT_INFEED2} minHeight={60} />
                             ) : inFeed2 === "ad" ? (
@@ -2371,8 +2396,8 @@ function Screener() {
                               </div>
                             ) : (
                               <div style={{ ...S.inFeedAd, position: "relative", textTransform: "none", letterSpacing: 0, gap: 12, fontSize: 11, color: MUTED }}>
-                                <span style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Go unlimited</span>
-                                <span>Unlimited leads, no ads, live crawls. From $7.99/week.</span>
+                                <span style={{ fontSize: 11.5, fontWeight: 700, color: TEXT }}>Upgrade</span>
+                                <span>No ads, no caps, live crawls. Pro $25/mo, Ultra $200/mo.</span>
                                 <button className="btnP" style={{ ...S.priBtn, padding: "4px 12px", fontSize: 10.5 }} onClick={(e) => openUnlimited(e.currentTarget)}>See plans</button>
                                 <button style={S.adCancel} onClick={() => setInFeed2("ad")} title="Back to the ad" aria-label="Close and show the ad again">Cancel</button>
                               </div>
@@ -2488,7 +2513,7 @@ function Screener() {
               <span style={{ color: TEXT }}>Private crawl on demand, leads before they reach the cache</span>
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              {!extra && !admin ? (
+              {!extra ? (
                 <button className="btnO" style={S.outBtn} onClick={openAd}>
                   <Icon k="play" size={11} /> Watch a 1-min ad for 20 more
                 </button>
@@ -2500,9 +2525,7 @@ function Screener() {
               </button>
             </div>
             <div style={{ fontSize: 10, color: FAINT, marginTop: 10 }}>
-              {admin && rtOn
-                ? "Real-time crawl mode is on (admin mock)."
-                : `Results are a delayed cache, snapshotted ${snapLabel}. Real-time data is paid.`}
+              {`Results are a delayed cache, snapshotted ${snapLabel}. Real-time data is paid.`}
             </div>
           </div>
           )}
@@ -2547,10 +2570,7 @@ function Screener() {
 
                     <div style={S.kvGrid}>
                       <span style={S.kvK}>Category</span>
-                      <span style={S.kvV}>
-                        <button className="kvLink" style={S.kvLink} onClick={() => setCat(selBiz.cat)}
-                          title="Filter the list by this category">{selBiz.cat}</button>
-                      </span>
+                      <span style={S.kvV}>{selBiz.cat}</span>
                       <span style={S.kvK}>Neighborhood</span>
                       <span style={S.kvV}>
                         <button className="kvLink" style={S.kvLink} onClick={() => setHood(selBiz.hood)}
@@ -2564,8 +2584,6 @@ function Screener() {
                       <span style={S.kvV}>{ageOf(selBiz) != null
                         ? <>{ageOf(selBiz)} yrs <span style={{ color: MUTED }}>(listed since {sinceYearOf(selBiz)})</span></>
                         : <span style={{ color: FAINT }}>no registry match yet</span>}</span>
-                      <span style={S.kvK}>Cache entry</span>
-                      <span style={{ ...S.kvV, fontFamily: mono, color: selBiz.listedAgoMin != null ? GREEN : TEXT }}>Listed {listedLabel(selBiz)}</span>
                       <span style={S.kvK}>Address</span>
                       <span style={S.kvV}>{[selBiz.addr, cityOf(selBiz)].filter(Boolean).join(", ")}</span>
                       {distLabel(selBiz) && (
@@ -2630,10 +2648,10 @@ function Screener() {
                     <div style={{ marginTop: 14 }}>
                       <div style={S.fLabel}>Recommended AI prompt <span style={S.proTag}>PRO</span></div>
                       <div style={{ position: "relative", marginTop: 6 }}>
-                        <div className={admin ? "" : "blurLock"} style={{ ...S.upFeature, marginBottom: 0, fontSize: 10, color: MUTED, lineHeight: 1.5, maxHeight: 96, overflow: "hidden" }}>
+                        <div className={isPaid ? "" : "blurLock"} style={{ ...S.upFeature, marginBottom: 0, fontSize: 10, color: MUTED, lineHeight: 1.5, maxHeight: 96, overflow: "hidden" }}>
                           {aiPromptOf(selBiz)}
                         </div>
-                        {!admin && (
+                        {!isPaid && (
                           <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <span style={{ fontFamily: mono, fontSize: 8.5, fontWeight: 700, letterSpacing: "0.7px", textTransform: "uppercase", color: TEXT, background: PANEL, border: `1px solid ${LINE}`, borderRadius: 2, padding: "3px 7px" }}>
                               Paid plans unlock this prompt
@@ -2643,7 +2661,7 @@ function Screener() {
                       </div>
                       <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 8, justifyContent: "center", ...(copiedPrompt ? { background: GREEN, borderColor: GREEN } : null) }}
                         onClick={(e) => {
-                          if (admin) { copyPrompt(selBiz); return; }
+                          if (isPaid) { copyPrompt(selBiz); return; }
                           openUnlimited(e.currentTarget, { title: "AI build prompts", body: "A ready-to-paste prompt per business, written from its live data: the presence gap, reviews, category, and contact details. Drop it into Lovable, v0, or Bolt and scaffold their site in minutes." });
                         }}>
                         {copiedPrompt ? "Copied to clipboard" : "Copy to Lovable"}
@@ -2661,7 +2679,7 @@ function Screener() {
                       </div>
                     </div>
 
-                    {admin && (
+                    {isOwner && (
                       <button className="btnO"
                         style={{ ...S.outBtn, width: "100%", marginTop: 12, justifyContent: "center", ...(contacted.has(selBiz.name) ? { color: GREEN, borderColor: GREEN } : null) }}
                         onClick={() => setContacted((s0) => { const n = new Set(s0); if (n.has(selBiz.name)) n.delete(selBiz.name); else n.add(selBiz.name); return n; })}>
@@ -2718,9 +2736,9 @@ function Screener() {
 
       {/* ── "Go unlimited" popover: anchored under whatever upsell was clicked ── */}
       {up && (
-        <div ref={upRef} className="upPop" style={{ ...S.upPop, left: up.x, top: up.y }} role="dialog" aria-label="Go unlimited">
+        <div ref={upRef} className="upPop" style={{ ...S.upPop, left: up.x, top: up.y }} role="dialog" aria-label="Upgrade your plan">
           <div style={S.upHead}>
-            <span style={{ fontWeight: 700, color: TEXT }}>Go unlimited</span>
+            <span style={{ fontWeight: 700, color: TEXT }}>Upgrade your plan</span>
             <span style={S.billSeg} role="tablist" aria-label="Billing period">
               <button role="tab" aria-selected={upBilling === "wk"}
                 style={{ ...S.billBtn, ...(upBilling === "wk" ? S.billOn : null) }}
@@ -2753,8 +2771,8 @@ function Screener() {
                   {pl.feats.map((f) => (
                     <div key={f} style={{ ...S.planRow, fontSize: 10.5 }}>{f}</div>
                   ))}
-                  <button className={pl.id === "unlimited" ? "btnP" : "btnO"}
-                    style={{ ...(pl.id === "unlimited" ? S.priBtn : S.outBtn), width: "100%", marginTop: 9, justifyContent: "center", fontSize: 10.5, padding: "6px 8px" }}
+                  <button className={pl.id === "pro" ? "btnP" : "btnO"}
+                    style={{ ...(pl.id === "pro" ? S.priBtn : S.outBtn), width: "100%", marginTop: 9, justifyContent: "center", fontSize: 10.5, padding: "6px 8px" }}
                     onClick={() => { setUpTier(pl.id); setUpErr(false); }}>
                     Start 1-day free trial
                   </button>
@@ -2888,7 +2906,7 @@ function Screener() {
               <span style={S.kvK}>Registry lookup</span><span style={{ ...S.kvV, fontFamily: mono, color: GREEN }}>OK, 95ms</span>
               <span style={S.kvK}>Review scrape</span><span style={{ ...S.kvV, fontFamily: mono, color: GREEN }}>OK, 620ms</span>
               <span style={S.kvK}>Queue depth</span><span style={{ ...S.kvV, fontFamily: mono }}>0 jobs</span>
-              <span style={S.kvK}>Cache age</span><span style={{ ...S.kvV, fontFamily: mono }}>{admin && rtOn ? "live" : "6 days"}</span>
+              <span style={S.kvK}>Cache age</span><span style={{ ...S.kvV, fontFamily: mono }}>{isOwner && rtOn ? "live" : "6 days"}</span>
             </div>
             <div style={{ fontSize: 10.5, color: MUTED, lineHeight: 1.55 }}>
               Free plans read the shared cache, so API health does not affect your results.
@@ -2986,7 +3004,7 @@ function Screener() {
             <button className="cancelBtn" style={S.cancelBtn} onClick={() => setAcctOpen(false)} aria-label="Cancel">Cancel</button>
             <div style={{ fontSize: 16, fontWeight: 700, color: TEXT, marginBottom: 4 }}>Manage account</div>
             <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 14 }}>
-              Current plan: <strong style={{ color: TEXT }}>{admin ? "Unlimited (admin)" : tier === "free" ? "Free" : tier === "starter" ? "Starter" : "Unlimited"}</strong>
+              Current plan: <strong style={{ color: TEXT }}>{admin ? `${effTier.charAt(0).toUpperCase() + effTier.slice(1)} (test)` : tier === "free" ? "Free" : tier === "pro" ? "Pro" : "Ultra"}</strong>
             </div>
             <div style={{ ...S.fLabel, marginBottom: 6 }}>Email or phone number</div>
             <input style={S.input} aria-label="Account email" placeholder="email or phone number"
@@ -3085,7 +3103,7 @@ function Screener() {
                     </button>
                   </div>
                   <div style={{ fontSize: 12.5, color: MUTED, marginTop: 5 }}>
-                    <button className="kvLink" style={S.kvLink} onClick={() => { setBizPage(null); setCat(d.cat); }}>{d.cat}</button>
+                    <span>{d.cat}</span>
                     {", "}
                     <button className="kvLink" style={S.kvLink} onClick={() => { setBizPage(null); setHood(d.hood); }}>{d.hood}</button>
                   </div>
@@ -3102,7 +3120,6 @@ function Screener() {
                 {[["Google rating", ratingOf(d) != null ? `${ratingOf(d).toFixed(1)}★` : "—", ratingOf(d) != null ? `top ${Math.max(2, 40 - Math.round((ratingOf(d) - 3.4) * 22))}% locally` : "no rating data yet"],
                   ["Reviews", d.rev ?? "—", d.rev == null ? "not fetched yet" : d.rev > 150 ? "high demand" : d.rev > 60 ? "steady traffic" : "emerging"],
                   ["Years listed", ageOf(d) ?? "—", ageOf(d) != null ? `since ${sinceYearOf(d)}` : "no registry match"],
-                  ["In cache", listedLabel(d), d.listedAgoMin != null ? "just crawled" : d.real ? "OSM record age" : "Jun 5 snapshot"],
                   ...(distLabel(d) ? [["Distance", distLabel(d), `from ${geo.city}`]] : [])].map(([k, v, sub]) => (
                   <div key={k} style={{ ...S.bizSec, padding: "10px 12px" }}>
                     <div style={S.bizSecT}>{k}</div>
@@ -3160,8 +3177,8 @@ function Screener() {
                     </div>
                   ) : (
                     <div style={{ ...S.inFeedAd, position: "relative", height: 210, flexDirection: "column", gap: 10, textTransform: "none", letterSpacing: 0, fontSize: 11, color: MUTED, padding: "0 18px", textAlign: "center" }}>
-                      <span style={{ fontSize: 12.5, fontWeight: 700, color: TEXT }}>Go unlimited</span>
-                      <span>No ads, real-time data, no caps. $7.99/week or $25/month, 1-day free trial.</span>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: TEXT }}>Upgrade</span>
+                      <span>No ads and no caps. Pro from $25/mo, Ultra $200/mo, 1-day free trial.</span>
                       <button className="btnP" style={{ ...S.priBtn, padding: "5px 14px", fontSize: 10.5 }}
                         onClick={(e) => openUnlimited(e.currentTarget)}>
                         See plans
@@ -3185,10 +3202,10 @@ function Screener() {
 
                   <div style={{ ...S.bizSecT, marginTop: 14 }}>Recommended AI prompt <span style={S.proTag}>PRO</span></div>
                   <div style={{ position: "relative" }}>
-                    <div className={admin ? "" : "blurLock"} style={{ ...S.upFeature, marginBottom: 0, fontSize: 10.5, color: MUTED, lineHeight: 1.55 }}>
+                    <div className={isPaid ? "" : "blurLock"} style={{ ...S.upFeature, marginBottom: 0, fontSize: 10.5, color: MUTED, lineHeight: 1.55 }}>
                       {aiPromptOf(d)}
                     </div>
-                    {!admin && (
+                    {!isPaid && (
                       <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <span style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: TEXT, background: PANEL, border: `1px solid ${LINE}`, borderRadius: 2, padding: "3px 8px" }}>
                           Paid plans unlock this prompt
@@ -3198,7 +3215,7 @@ function Screener() {
                   </div>
                   <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 8, justifyContent: "center", ...(copiedPrompt ? { background: GREEN, borderColor: GREEN } : null) }}
                     onClick={(e) => {
-                      if (admin) { copyPrompt(d); return; }
+                      if (isPaid) { copyPrompt(d); return; }
                       openUnlimited(e.currentTarget, { title: "AI build prompts", body: "A ready-to-paste prompt per business, written from its live data: the presence gap, reviews, category, and contact details. Drop it into Lovable, v0, or Bolt and scaffold their site in minutes." });
                     }}>
                     {copiedPrompt ? "Copied to clipboard" : "Copy to Lovable"}
@@ -3241,7 +3258,10 @@ function Screener() {
       {customLoc && (
         <div ref={customLocRef} style={{ ...S.locPop, left: customLoc.x, top: customLoc.y, width: 300 }} role="dialog" aria-label="Add a custom location">
           <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 8 }}>
-            Look up no-website businesses in any city. If it&apos;s already loaded you&apos;ll see it instantly; if not, we&apos;ll notify you when it&apos;s ready.
+            Look up no-website businesses in any city. If it&apos;s already loaded you&apos;ll see it instantly.
+            {" "}{canCrawl
+              ? (isOwner ? "Otherwise we crawl it now." : `Otherwise we run a live crawl (${ultraLeft != null ? ultraLeft : 2} left today).`)
+              : " Otherwise we'll crawl it and notify you when it's ready."}
           </div>
           <input autoFocus value={locSearch} onChange={(e) => setLocSearch(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") requestCustomLoc(locSearch); if (e.key === "Escape") setCustomLoc(null); }}
@@ -3249,22 +3269,29 @@ function Screener() {
             style={{ ...S.input, width: "100%" }} />
           <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 8, justifyContent: "center" }}
             disabled={reqBusy} onClick={() => requestCustomLoc(locSearch)}>
-            {reqBusy ? <><Spin /> Looking up</> : "Go"}
+            {reqBusy ? <><Spin /> Looking up</> : (canCrawl ? "Crawl it" : "Request it")}
           </button>
         </div>
       )}
 
-      {/* "You'll be notified" modal for an uncached custom location. */}
+      {/* "You'll be notified" modal — shown after a Free/Pro location request,
+          or when an Ultra user has spent their daily live crawls. */}
       {notifyPopup && (
         <div style={{ ...S.overlay, zIndex: 97 }} onClick={() => setNotifyPopup(null)} role="dialog" aria-modal="true">
           <div style={{ ...S.adModal, width: 360, textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
             <div style={{ width: 40, height: 40, borderRadius: "50%", background: PANEL2, border: `1px solid ${BLUE}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", color: BLUE }}>
               <Icon k="bell" size={18} />
             </div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 6 }}>We&apos;re on it</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 6 }}>
+              {notifyPopup.ultraLimited ? "Daily crawls used up" : "We’re on it"}
+            </div>
             <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.55, marginBottom: 14 }}>
-              <strong style={{ color: TEXT }}>{notifyPopup.label}</strong> isn&apos;t loaded yet. You&apos;ll be notified here and by email the moment it&apos;s ready
-              {notifyPopup.requests > 1 ? ` — ${notifyPopup.requests} people are waiting for it.` : "."}
+              {notifyPopup.ultraLimited ? (
+                <>You&apos;ve used today&apos;s live crawls for <strong style={{ color: TEXT }}>{notifyPopup.label}</strong>. It&apos;s queued — you&apos;ll be notified here and by email when it&apos;s ready, or run it yourself again tomorrow.</>
+              ) : (
+                <><strong style={{ color: TEXT }}>{notifyPopup.label}</strong> isn&apos;t loaded yet. You&apos;ll be notified here and by email the moment it&apos;s ready
+                {notifyPopup.requests > 1 ? ` — ${notifyPopup.requests} people are waiting for it.` : "."}</>
+              )}
             </div>
             <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }} onClick={() => setNotifyPopup(null)}>
               Got it
@@ -3276,28 +3303,36 @@ function Screener() {
       {locPrompt && (
         <div ref={locPromptRef} style={{ ...S.locPop, left: locPrompt.x, top: locPrompt.y }} role="dialog" aria-label="Request your location for caching">
           <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 10 }}>
-            Your browser will ask for permission, then we detect your position, resolve your city,
-            and crawl the real businesses around you (OpenStreetMap, Google listing checks, registry).
+            {canCrawl
+              ? "Your browser will ask for permission, then we detect your position, resolve your city, and crawl the real businesses around you (OpenStreetMap, Google listing checks, registry)."
+              : "Your browser will ask for permission, then we detect your position and resolve your city. We'll load that area and notify you here and by email the moment it's ready."}
           </div>
           <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }}
             onClick={() => {
               setLocPrompt(null);
               // locate() gates by itself: anonymous visitors outside the free
-              // city are routed to signup after detection; everyone else gets
-              // a real crawl of their surroundings.
+              // city are routed to signup after detection; Free/Pro get a
+              // "we'll notify you" popup, Ultra/Owner get a live crawl.
               locate();
-              flashGeo("Detecting your location and crawling the businesses around you.");
+              flashGeo(canCrawl
+                ? "Detecting your location and crawling the businesses around you."
+                : "Detecting your location…");
             }}>
-            <Icon k="target" size={12} /> Request your location for caching
+            <Icon k="target" size={12} /> {canCrawl ? "Detect my location" : "Detect my location"}
           </button>
           {!authed && !admin && (
             <div style={{ fontSize: 10, color: FAINT, marginTop: 8, lineHeight: 1.5 }}>
               Only the {DEFAULT_LOC.label} cache is public. Sign up free and we will notify you the moment your area&apos;s cache is posted.
             </div>
           )}
-          {isUnlimited && (
+          {isPro && (
+            <div style={{ fontSize: 10, color: BLUE, marginTop: 8, lineHeight: 1.5 }}>
+              Pro: we crawl the area you request and notify you the moment it&apos;s ready.
+            </div>
+          )}
+          {(isUltra || isOwner) && (
             <div style={{ fontSize: 10, color: GREEN, marginTop: 8, lineHeight: 1.5 }}>
-              Ultra: search any location in the US and pull a fresh cache on demand, no waiting.
+              {isOwner ? "Owner: crawl any location on demand, no limits." : "Ultra: pull a fresh cache on demand — 2 live crawls a day."}
             </div>
           )}
         </div>
@@ -3602,15 +3637,18 @@ function Screener() {
         );
       })()}
 
-      {/* ── Admin QA switch (fixed, bottom-right) ── */}
+      {/* ── Tier test switch (fixed, bottom-right) ── The owner unlocks this
+             with a password, then previews any tier. "Owner" is the operator
+             god-mode (unlimited crawls, QA tools); Free/Pro/Ultra render the
+             real, limited experience of each so they can be tested faithfully. */}
       <div className="adminDock" style={{ position: "fixed", right: 12, bottom: admin ? 10 : 100, zIndex: 95, display: "flex", gap: 6 }}>
         {admin && (
-          <span style={S.simSeg} role="group" aria-label="Simulate tier">
-            <span style={{ fontFamily: mono, fontSize: 8, fontWeight: 700, letterSpacing: "0.6px", color: FAINT, padding: "0 6px", alignSelf: "center" }}>SIM</span>
-            {[["free", "Free"], ["starter", "Pro"], ["unlimited", "Ultra"]].map(([t, lab]) => (
+          <span style={S.simSeg} role="group" aria-label="Test as tier">
+            <span style={{ fontFamily: mono, fontSize: 8, fontWeight: 700, letterSpacing: "0.6px", color: FAINT, padding: "0 6px", alignSelf: "center" }}>TEST</span>
+            {[["free", "Free"], ["pro", "Pro"], ["ultra", "Ultra"], ["owner", "Owner"]].map(([t, lab]) => (
               <button key={t} className="simBtn" style={{ ...S.simBtn, ...(simTier === t ? S.simBtnOn : null) }}
                 onClick={() => setSimTier(t)} aria-pressed={simTier === t}
-                title={`Preview the app as a ${lab} user`}>
+                title={t === "owner" ? "Owner: unlimited crawls and QA tools" : `Preview the app as a ${lab} user, with that tier's real limits`}>
                 {lab}
               </button>
             ))}
@@ -3626,18 +3664,18 @@ function Screener() {
             setAdminPw(""); setAdminErr(false); setAdminAsk(true);
           }}
           aria-pressed={admin}
-          title="Admin test mode (password protected): unlocks every paid gate for QA">
-          ADMIN{admin ? ": ON" : ""}
+          title="Owner/test mode (password protected): switch between Free, Pro, Ultra and Owner">
+          {admin ? "TEST: ON" : "TEST"}
         </button>
       </div>
 
-      {/* ── Admin password modal (window.prompt is blocked in sandboxed frames) ── */}
+      {/* ── Owner password modal (window.prompt is blocked in sandboxed frames) ── */}
       {adminAsk && (
         <div style={{ ...S.overlay, zIndex: 96 }} onClick={() => setAdminAsk(false)} role="dialog" aria-modal="true">
           <div style={{ ...S.adModal, width: 320 }} onClick={(e) => e.stopPropagation()}>
             <button className="cancelBtn" style={S.cancelBtn} onClick={() => setAdminAsk(false)} aria-label="Cancel">Cancel</button>
-            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 4 }}>Admin mode</div>
-            <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 12 }}>Only the admin can crawl new areas and refresh the cache for everyone.</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 4 }}>Owner / test mode</div>
+            <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 12 }}>Unlocks the tier switch: preview Free, Pro, Ultra, or crawl freely as the Owner.</div>
             <input type="password" autoFocus placeholder="Admin password" className={adminErr ? "shake" : ""}
               style={{ ...S.input, ...(adminErr ? { borderColor: RED } : null) }}
               aria-label="Admin password" value={adminPw}
@@ -3655,7 +3693,7 @@ function Screener() {
 
       {/* ── Owner panel: cache places for everyone, see who requested what,
           and check that owner-only access + persistence are configured. ── */}
-      {admin && reqOpen && (() => {
+      {isOwner && reqOpen && (() => {
         const st = adminStatus || {};
         const Row = ({ on, label, hint }) => (
           <div style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 11, padding: "3px 0" }}>

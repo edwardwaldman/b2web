@@ -499,6 +499,15 @@ function Screener() {
   const [adminAsk, setAdminAsk] = useState(false);   // admin password modal
   const [adminPw, setAdminPw] = useState("");
   const [adminErr, setAdminErr] = useState(false);
+  // Admin key: the operator's password, validated server-side and sent as the
+  // x-admin-key header so only the admin can trigger a billable crawl.
+  const [adminKey, setAdminKey] = useState(() => { try { return localStorage.getItem("b2w-admin-key") || ""; } catch { return ""; } });
+  const [adminChecking, setAdminChecking] = useState(false);
+  const [pendingArea, setPendingArea] = useState(null); // non-admin: {label, requests} for an uncached area
+  const [reqOpen, setReqOpen] = useState(false);        // admin requests panel open
+  const [reqData, setReqData] = useState(null);         // {requests[], count, totalRequesters}
+  const [reqBusy, setReqBusy] = useState(false);
+  const [locSearch, setLocSearch] = useState("");       // admin: type any place to cache
   const [alertOn, setAlertOn] = useState(false);     // armed alert (mock)
   const [alertToast, setAlertToast] = useState(null); // {biz, ago} · dropped notification
   const alertIdx = useRef(0);
@@ -830,10 +839,19 @@ function Screener() {
       const rowLimit = admin || isPaid ? 400 : 40;
       const qs = `lat=${lat}&lon=${lng}&radius=${opts.radiusM || 4000}` +
         `&city=${encodeURIComponent(label || "")}&limit=${rowLimit}` + (opts.fresh ? "&fresh=1" : "");
-      const r = await fetch(`/api/businesses?${qs}`);
+      // The admin key authorizes the billable crawl; non-admins send nothing
+      // and the server only ever reads them the shared cache.
+      const r = await fetch(`/api/businesses?${qs}`, adminKey ? { headers: { "x-admin-key": adminKey } } : undefined);
       const j = await r.json();
       if (reqId !== liveReq.current) return null; // superseded by a newer request
       if (!j || !j.ok) throw new Error((j && j.error) || `HTTP ${r.status}`);
+      // Non-admin, area not cached: the server queued a request instead of
+      // crawling. Show the pending state, don't replace the current data.
+      if (j.pending) {
+        setPendingArea({ label: label || j.label || "this area", requests: j.requests || 1, gated: j.gated });
+        return j;
+      }
+      setPendingArea(null);
       setLive((prev) => {
         let rows = j.rows;
         if (opts.fresh && prev && prev.rows.length) {
@@ -991,6 +1009,57 @@ function Screener() {
     if (!admin) { setAdminRows(null); setEditRows(false); }
     if (admin) setWall(false); // admin acts as the top paid tier: no wall
   }, [admin]);
+
+  // Validate the typed admin password against the server (ADMIN_SECRET). On
+  // success we store the key and enable admin; the key then rides on every
+  // crawl request as x-admin-key. When the gate is unconfigured server-side,
+  // any password unlocks (open deployment for local/dev).
+  const tryAdmin = async (pw) => {
+    if (adminChecking) return;
+    setAdminChecking(true);
+    try {
+      const r = await fetch("/api/admin", { headers: { "x-admin-key": pw } });
+      const j = await r.json();
+      if (j && j.ok && (j.admin || !j.gateEnabled)) {
+        setAdminKey(pw);
+        try { localStorage.setItem("b2w-admin-key", pw); } catch {}
+        setAdmin(true); setAdminAsk(false); setAdminPw("");
+        return true;
+      }
+    } catch {}
+    setAdminErr(true); setTimeout(() => setAdminErr(false), 420);
+    return false;
+  };
+
+  // Admin: crawl any location by name (geocode -> admin crawl). This is the
+  // only path that spends API budget, and only the admin can reach it.
+  const adminCacheSearch = async (q) => {
+    const query = (q || "").trim();
+    if (!query || reqBusy) return;
+    setReqBusy(true);
+    try {
+      const g = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`).then((x) => x.json());
+      const hit = g && g.ok && g.results && g.results[0];
+      if (!hit) { flashGeo(`Could not find "${query}".`); return; }
+      setGeo({ lat: hit.lat, lng: hit.lon, city: hit.label });
+      setLocCity(hit.label);
+      setSort({ key: "dist", dir: "asc" });
+      await loadLive(hit.lat, hit.lon, hit.label, { fresh: true });
+      setLocSearch("");
+    } catch { flashGeo("Location lookup failed."); }
+    finally { setReqBusy(false); }
+  };
+
+  // Admin: load the pending request queue (areas people asked for).
+  const loadRequests = async () => {
+    if (!adminKey) return;
+    setReqBusy(true);
+    try {
+      const j = await fetch("/api/requests", { headers: { "x-admin-key": adminKey } }).then((x) => x.json());
+      if (j && j.ok) setReqData(j);
+    } catch { flashGeo("Could not load requests."); }
+    finally { setReqBusy(false); }
+  };
 
   // Armed alerts (admin preview): cycle through the real no-website leads in
   // the cache, nearest first once located. The toast shows the row's actual
@@ -1838,6 +1907,31 @@ function Screener() {
           <Icon k="target" size={12} />
           Request your location
         </button>
+
+        {/* Admin-only: cache any location by name, and view what people
+            have requested. These are the only ways to spend crawl budget. */}
+        {admin && (
+          <>
+            <input
+              value={locSearch}
+              onChange={(e) => setLocSearch(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") adminCacheSearch(locSearch); }}
+              placeholder="Cache any place, e.g. Andover, MA"
+              aria-label="Admin: cache any location"
+              style={{ ...S.select, minWidth: 200, cursor: "text" }} />
+            <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
+              disabled={reqBusy}
+              onClick={() => adminCacheSearch(locSearch)}
+              title="Crawl this place and cache it for everyone">
+              {reqBusy ? <><Spin /> Crawling</> : "Cache it"}
+            </button>
+            <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }}
+              onClick={() => { setReqOpen(true); loadRequests(); }}
+              title="Areas people have requested">
+              Requests{reqData && reqData.count ? ` (${reqData.count})` : ""}
+            </button>
+          </>
+        )}
         {geoMsg && <span style={{ fontSize: 10, color: AMBER, whiteSpace: "nowrap" }}>{geoMsg}</span>}
 
         <span style={S.vruleSm} />
@@ -2010,6 +2104,18 @@ function Screener() {
           <span style={{ color: AMBER, fontWeight: 700 }}>Unverified source.</span>{" "}
           Running on OpenStreetMap, which can't confirm a business is still open or truly has no website.
           Set <span style={{ fontFamily: mono, color: TEXT }}>GOOGLE_PLACES_API_KEY</span> in your deployment for authoritative, active-only, no-website leads.
+        </div>
+      )}
+
+      {/* Non-admin: this area isn't cached and only an admin can crawl it.
+          Their visit is counted; the admin loads it once for everyone. */}
+      {!admin && pendingArea && (
+        <div style={{ margin: "0 0 8px", padding: "9px 13px", border: `1px solid ${BLUE}`, borderRadius: 3, background: PANEL, fontSize: 11.5, color: TEXT, lineHeight: 1.55 }}>
+          <span style={{ fontWeight: 700 }}>{pendingArea.label} isn&apos;t cached yet.</span>{" "}
+          <span style={{ color: MUTED }}>
+            Your request was logged — {pendingArea.requests === 1 ? "you're the first to ask" : `${pendingArea.requests} people have asked`} for it.
+            An admin loads each area once and it stays available for everyone, so you don&apos;t have to do anything.
+          </span>
         </div>
       )}
 
@@ -3368,7 +3474,11 @@ function Screener() {
         )}
         <button className="adminBtn" style={{ ...S.adminBtn, position: "static", ...(admin ? S.adminOn : null) }}
           onClick={() => {
-            if (admin) { setAdmin(false); return; }
+            if (admin) {
+              setAdmin(false); setAdminKey(""); setReqOpen(false); setLocSearch("");
+              try { localStorage.removeItem("b2w-admin-key"); } catch {}
+              return;
+            }
             setAdminPw(""); setAdminErr(false); setAdminAsk(true);
           }}
           aria-pressed={admin}
@@ -3383,24 +3493,62 @@ function Screener() {
           <div style={{ ...S.adModal, width: 320 }} onClick={(e) => e.stopPropagation()}>
             <button className="cancelBtn" style={S.cancelBtn} onClick={() => setAdminAsk(false)} aria-label="Cancel">Cancel</button>
             <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 4 }}>Admin mode</div>
-            <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 12 }}>Unlocks every paid gate for testing.</div>
-            <input type="password" autoFocus placeholder="Password" className={adminErr ? "shake" : ""}
+            <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 12 }}>Only the admin can crawl new areas and refresh the cache for everyone.</div>
+            <input type="password" autoFocus placeholder="Admin password" className={adminErr ? "shake" : ""}
               style={{ ...S.input, ...(adminErr ? { borderColor: RED } : null) }}
               aria-label="Admin password" value={adminPw}
               onChange={(e) => { setAdminPw(e.target.value); setAdminErr(false); }}
-              onKeyDown={(e) => {
-                if (e.key !== "Enter") return;
-                if (adminPw === "123") { setAdmin(true); setAdminAsk(false); }
-                else { setAdminErr(true); setTimeout(() => setAdminErr(false), 420); }
-              }} />
+              onKeyDown={(e) => { if (e.key === "Enter") tryAdmin(adminPw); }} />
             {adminErr && <div style={{ color: RED, fontSize: 10.5, marginTop: 6 }}>Incorrect password.</div>}
             <button className="btnP" style={{ ...S.priBtn, width: "100%", marginTop: 12, justifyContent: "center" }}
-              onClick={() => {
-                if (adminPw === "123") { setAdmin(true); setAdminAsk(false); }
-                else { setAdminErr(true); setTimeout(() => setAdminErr(false), 420); }
-              }}>
-              Unlock
+              disabled={adminChecking}
+              onClick={() => tryAdmin(adminPw)}>
+              {adminChecking ? <><Spin /> Checking</> : "Unlock"}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Admin: requested-area queue. Areas visitors asked for but that
+          aren't cached yet, with how many people asked. Crawl loads it once
+          for everyone. ── */}
+      {admin && reqOpen && (
+        <div style={{ ...S.overlay, zIndex: 96 }} onClick={() => setReqOpen(false)} role="dialog" aria-modal="true">
+          <div style={{ ...S.adModal, width: 480, maxHeight: "80vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
+            <button className="cancelBtn" style={S.cancelBtn} onClick={() => setReqOpen(false)} aria-label="Cancel">Cancel</button>
+            <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 2 }}>Requested areas</div>
+            <div style={{ fontSize: 10.5, color: MUTED, marginBottom: 12 }}>
+              {reqData ? `${reqData.count} area${reqData.count === 1 ? "" : "s"} waiting, ${reqData.totalRequesters} total request${reqData.totalRequesters === 1 ? "" : "s"}.` : "Loading..."}
+              {" "}Crawling loads an area once and it stays cached for everyone.
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button className="btnO" style={{ ...S.outBtn, padding: "4px 10px" }} disabled={reqBusy} onClick={loadRequests}>
+                {reqBusy ? <><Spin /> Refreshing</> : "Refresh list"}
+              </button>
+            </div>
+            {reqData && reqData.requests && reqData.requests.length === 0 && (
+              <div style={{ fontSize: 11.5, color: FAINT, padding: "14px 0" }}>No pending requests. When someone opens an uncached area, it shows up here.</div>
+            )}
+            {reqData && reqData.requests && reqData.requests.map((rq) => (
+              <div key={rq.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${LINE}` }}>
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  <span style={{ display: "block", fontSize: 12, fontWeight: 700, color: TEXT }}>{rq.label || `${rq.lat.toFixed(3)}, ${rq.lon.toFixed(3)}`}</span>
+                  <span style={{ display: "block", fontSize: 10, color: MUTED, fontFamily: mono }}>
+                    {rq.requests} request{rq.requests === 1 ? "" : "s"} · last {new Date(rq.lastRequested).toLocaleDateString()}
+                  </span>
+                </span>
+                <button className="btnP" style={{ ...S.priBtn, padding: "5px 12px", fontSize: 10.5 }}
+                  disabled={reqBusy}
+                  onClick={async () => {
+                    setGeo({ lat: rq.lat, lng: rq.lon, city: rq.label || "requested area" });
+                    setLocCity(rq.label || "requested area");
+                    setReqOpen(false);
+                    await loadLive(rq.lat, rq.lon, rq.label || "", { fresh: true, radiusM: rq.radius });
+                  }}>
+                  Crawl for everyone
+                </button>
+              </div>
+            ))}
           </div>
         </div>
       )}

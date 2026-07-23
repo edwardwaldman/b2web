@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   LeadRow, GooglePlaceLite, normalizeOverpass, mergeGoogleNearby, isOpenGoogle,
-  cacheGet, cacheSet,
 } from "@/lib/leads";
+import {
+  areaKey, getCache, setCache, bumpRequest, fulfillRequest,
+  isAdminRequest, adminGateEnabled,
+} from "@/lib/store";
 
 // GET /api/businesses?lat=..&lon=..&radius=4000[&fresh=1][&all=1][&limit=40]
 //
@@ -28,12 +31,9 @@ const OVERPASS_URLS = [
   "https://overpass.private.coffee/api/interpreter",
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ].filter(Boolean) as string[];
-// Google mode caches longer than free OSM mode: each crawl spends billable
-// requests, so a snapshot is reused for 30 minutes (override with
-// BUSINESSES_CACHE_TTL_MIN). A forced re-crawl (fresh=1) is honored at most
-// once per 2 minutes per location; inside that window the cache answers.
-const OSM_TTL_MS = 10 * 60 * 1000;
-const GOOGLE_TTL_MS = (parseInt(process.env.BUSINESSES_CACHE_TTL_MIN || "", 10) || 30) * 60 * 1000;
+// The shared cache persists until an admin re-crawls the area. A forced
+// admin re-crawl (fresh=1) is honored at most once per 2 minutes per area;
+// inside that window the cache answers.
 const FRESH_COOLDOWN_MS = 2 * 60 * 1000;
 const MAX_ROWS = 400;
 
@@ -158,14 +158,46 @@ export async function GET(req: NextRequest) {
   const fresh = sp.get("fresh") === "1";
   const includeSites = sp.get("all") === "1";
   const limit = Math.min(MAX_ROWS, Math.max(1, parseInt(sp.get("limit") || "", 10) || 120));
+  const admin = isAdminRequest(req);
 
-  const cacheKey = `biz:${lat.toFixed(3)}:${lon.toFixed(3)}:${radius}:${city}:${includeSites ? 1 : 0}`;
-  const hit = cacheGet<{ checkedAt: string; rows: LeadRow[] }>(cacheKey);
-  // Serve the cache unless a re-crawl is both requested and past its cooldown.
-  if (hit && (!fresh || Date.now() - Date.parse(hit.checkedAt) < FRESH_COOLDOWN_MS)) {
-    return NextResponse.json({ ...hit, rows: hit.rows.slice(0, limit), count: Math.min(hit.rows.length, limit) });
+  const key = areaKey(lat, lon, radius, includeSites);
+  const slim = (payload: { rows: LeadRow[]; [k: string]: unknown }) =>
+    ({ ...payload, cached: true, rows: payload.rows.slice(0, limit), count: Math.min(payload.rows.length, limit) });
+
+  // 1) Shared cache. Anyone may READ it. Serve unless an admin forces a
+  //    past-cooldown re-crawl.
+  const cached = await getCache(key);
+  const cachedPayload = cached?.payload as { checkedAt?: string; rows?: LeadRow[] } | undefined;
+  if (cachedPayload?.rows) {
+    const fresherThanCooldown = cached && Date.now() - Date.parse(cached.checked_at) < FRESH_COOLDOWN_MS;
+    if (!(fresh && admin && !fresherThanCooldown)) {
+      return NextResponse.json(slim(cachedPayload as { rows: LeadRow[] }));
+    }
   }
 
+  // 2) Cache miss (or admin forced refresh). The billable crawl is
+  //    ADMIN-ONLY. A non-admin never triggers Google/Overpass — instead the
+  //    area is queued and its request counter bumped, so the admin can see
+  //    demand and crawl it once for everyone.
+  if (!admin) {
+    const requests = await bumpRequest({ key, label: city || null, lat, lon, radius });
+    return NextResponse.json({
+      ok: true,
+      cached: false,
+      pending: true,
+      gated: adminGateEnabled,
+      requests,
+      label: city || null,
+      lat, lon, radiusM: radius,
+      rows: [],
+      count: 0,
+      message: adminGateEnabled
+        ? `This area isn't cached yet. It's been requested by ${requests} ${requests === 1 ? "person" : "people"}; an admin will crawl it.`
+        : "This area isn't cached yet.",
+    }, { status: 200 });
+  }
+
+  // 3) Admin path: run the crawl.
   const checked = new Date();
   const ctx = { city: city || "Your area", checked };
   const googleFirst = !!process.env.GOOGLE_PLACES_API_KEY;
@@ -177,23 +209,16 @@ export async function GET(req: NextRequest) {
     if (places.length) {
       rows = mergeGoogleNearby([], places, ctx);
       source = "Google Places";
-    } else if (hit) {
-      // Budget spent or Google empty: a stale snapshot of real data beats
-      // burning quota; serve it past its TTL rather than re-crawling.
-      return NextResponse.json({ ...hit, rows: hit.rows.slice(0, limit), count: Math.min(hit.rows.length, limit) });
+    } else if (cachedPayload?.rows) {
+      return NextResponse.json(slim(cachedPayload as { rows: LeadRow[] }));
     }
   }
   if (!rows.length) {
-    // Keyless (or Google returned nothing): OpenStreetMap inventory.
     let elements;
     try {
       elements = await fetchOverpass(lat, lon, radius);
     } catch (e) {
-      // Every mirror refused (public Overpass rate-limits shared hosting
-      // IPs). A stale snapshot of real data beats an empty screen.
-      if (hit) {
-        return NextResponse.json({ ...hit, rows: hit.rows.slice(0, limit), count: Math.min(hit.rows.length, limit) });
-      }
+      if (cachedPayload?.rows) return NextResponse.json(slim(cachedPayload as { rows: LeadRow[] }));
       return NextResponse.json(
         { ok: false, error: `Business data source unreachable: ${e instanceof Error ? e.message : "unknown"}` },
         { status: 502 },
@@ -204,8 +229,6 @@ export async function GET(req: NextRequest) {
   }
 
   const total = rows.length;
-  // The product is businesses with no standalone website. "site" rows are
-  // dropped unless explicitly requested.
   if (!includeSites) rows = rows.filter((r) => r.status !== "site");
 
   const ord = { none: 0, third: 1, site: 2 } as const;
@@ -218,8 +241,6 @@ export async function GET(req: NextRequest) {
     source,
     googleConfigured: !!process.env.GOOGLE_PLACES_API_KEY,
     googleEnriched: source === "Google Places",
-    // Keyless (OSM) results are candidates: OSM cannot confirm a business is
-    // still open or truly has no website. Google mode is authoritative.
     unverified: source !== "Google Places",
     checkedAt: checked.toISOString(),
     lat, lon, radiusM: radius,
@@ -228,6 +249,9 @@ export async function GET(req: NextRequest) {
     leads: rows.filter((r) => r.status !== "site").length,
     rows,
   };
-  cacheSet(cacheKey, payload, source === "Google Places" ? GOOGLE_TTL_MS : OSM_TTL_MS);
-  return NextResponse.json({ ...payload, rows: rows.slice(0, limit), count: Math.min(rows.length, limit) });
+  // Persist to the shared cache for everyone, and clear this area from the
+  // request queue now that it's fulfilled.
+  await setCache({ key, label: city || null, lat, lon, radius, source, payload, checked_at: checked.toISOString() });
+  await fulfillRequest(key);
+  return NextResponse.json({ ...payload, cached: false, rows: rows.slice(0, limit), count: Math.min(rows.length, limit) });
 }

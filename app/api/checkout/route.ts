@@ -16,9 +16,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-const PLANS: Record<string, { name: string; mo: number }> = {
-  starter: { name: "B2Web Starter", mo: 2000 },      // cents
-  unlimited: { name: "B2Web Unlimited", mo: 20000 },
+// One Pro plan, priced per billing cadence in cents.
+const PLANS: Record<string, { name: string; wk: number; mo: number }> = {
+  unlimited: { name: "B2Web Pro", wk: 799, mo: 2500 },
 };
 
 async function stripe(path: string, form?: Record<string, string>): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -41,21 +41,19 @@ export async function POST(req: NextRequest) {
   if (!process.env.STRIPE_SECRET_KEY) {
     return NextResponse.json({ ok: false, error: "stripe-not-configured" }, { status: 501 });
   }
-  let plan = "", billing = "mo", email = "", userId = "";
+  let plan = "unlimited", billing = "mo", email = "", userId = "";
   try {
     const j = await req.json();
-    plan = String(j.plan || "");
-    billing = j.billing === "yr" ? "yr" : "mo";
+    if (j.plan) plan = String(j.plan);
+    billing = j.billing === "wk" ? "wk" : "mo";
     email = String(j.email || "").slice(0, 200);
     userId = String(j.userId || "").slice(0, 64);
   } catch {}
-  const p = PLANS[plan];
-  if (!p) return NextResponse.json({ ok: false, error: "unknown plan" }, { status: 400 });
+  const p = PLANS[plan] || PLANS.unlimited;
 
   const origin = req.headers.get("origin") || req.nextUrl.origin;
   const priceId = process.env[`STRIPE_PRICE_${plan.toUpperCase()}_${billing.toUpperCase()}`];
-  // Yearly bills 12 months at 20% off the monthly rate.
-  const unitAmount = billing === "yr" ? Math.round(p.mo * 0.8) * 12 : p.mo;
+  const unitAmount = billing === "wk" ? p.wk : p.mo;
 
   const form: Record<string, string> = {
     mode: "subscription",
@@ -72,9 +70,9 @@ export async function POST(req: NextRequest) {
   } else {
     form["line_items[0][price_data][currency]"] = "usd";
     form["line_items[0][price_data][unit_amount]"] = String(unitAmount);
-    form["line_items[0][price_data][recurring][interval]"] = billing === "yr" ? "year" : "month";
+    form["line_items[0][price_data][recurring][interval]"] = billing === "wk" ? "week" : "month";
     form["line_items[0][price_data][product_data][name]"] =
-      `${p.name} (${billing === "yr" ? "yearly" : "monthly"})`;
+      `${p.name} (${billing === "wk" ? "weekly" : "monthly"})`;
   }
   if (email) form.customer_email = email;
   if (userId) form.client_reference_id = userId; // ties the session to the account
@@ -111,8 +109,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       paid,
-      plan: meta.plan && PLANS[meta.plan] ? meta.plan : null,
-      billing: meta.billing === "yr" ? "yr" : "mo",
+      plan: meta.plan && PLANS[meta.plan] ? meta.plan : (paid ? "unlimited" : null),
+      billing: meta.billing === "wk" ? "wk" : "mo",
       customerEmail: (body.customer_details as { email?: string } | undefined)?.email || null,
     });
   } catch (e) {

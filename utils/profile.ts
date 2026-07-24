@@ -16,17 +16,20 @@ import { supabase } from '@/utils/supabase';
 // gated QA/operator mode in the UI, kept deliberately separate from 'ultra'.
 export type Tier = 'free' | 'pro' | 'ultra';
 // Old rows used starter/unlimited before the rename; map them forward so a
-// pre-existing profile keeps working. Anything unknown falls back to free.
-function normalizeTier(v: unknown): Tier {
+// pre-existing profile keeps working. The old app sold exactly ONE paid plan
+// ("Pro", $25/mo) whose internal id was 'unlimited', so BOTH legacy paid ids
+// map to 'pro' — never to 'ultra'. Mapping them to 'ultra' would hand every
+// old $25/mo customer the new $200/mo live-crawl tier for free. Anything
+// unknown falls back to free.
+export function normalizeTier(v: unknown): Tier {
   switch (v) {
     case 'pro':
     case 'ultra':
     case 'free':
       return v;
     case 'starter':
-      return 'pro';
     case 'unlimited':
-      return 'ultra';
+      return 'pro';
     default:
       return 'free';
   }

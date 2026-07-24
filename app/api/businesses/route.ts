@@ -72,6 +72,47 @@ function ultraBump(id: string): void {
   ultraDay.by.set(id, ultraUsed(id) + 1);
 }
 
+// ── Caller identity / entitlement ───────────────────────────────────────────
+// A live crawl is billable, so authorizing it on a client-supplied `tier` param
+// alone would let anyone spend the Google budget. For the Ultra tier we instead
+// verify the caller's Supabase session server-side and read their REAL tier
+// from the profiles table (the authoritative, webhook-set column). The Owner
+// path stays gated by the separate admin secret (x-admin-key).
+const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
+const SB_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+
+function normTier(v: unknown): string {
+  // Mirror utils/profile.ts: both legacy paid ids collapse to 'pro', never 'ultra'.
+  if (v === "ultra" || v === "pro" || v === "free") return v;
+  if (v === "starter" || v === "unlimited") return "pro";
+  return "free";
+}
+
+// Returns { id, tier } for a valid Bearer session token, else null. Uses the
+// caller's OWN token to read their profile row (RLS permits reading self), so
+// no service-role key is required.
+async function verifyCaller(req: Request): Promise<{ id: string; tier: string } | null> {
+  const authz = req.headers.get("authorization") || "";
+  const token = authz.toLowerCase().startsWith("bearer ") ? authz.slice(7).trim() : "";
+  if (!token || !SB_URL || !SB_ANON) return null;
+  try {
+    const ur = await fetch(`${SB_URL}/auth/v1/user`, {
+      headers: { apikey: SB_ANON, Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!ur.ok) return null;
+    const user = (await ur.json()) as { id?: string };
+    if (!user?.id) return null;
+    const pr = await fetch(
+      `${SB_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=tier&limit=1`,
+      { headers: { apikey: SB_ANON, Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(6000) },
+    );
+    if (!pr.ok) return { id: user.id, tier: "free" };
+    const rows = (await pr.json()) as { tier?: string }[];
+    return { id: user.id, tier: normTier(rows?.[0]?.tier) };
+  } catch { return null; }
+}
+
 function overpassQuery(lat: number, lon: number, radius: number): string {
   const around = `(around:${radius},${lat},${lon})`;
   return `[out:json][timeout:30];
@@ -181,19 +222,15 @@ export async function GET(req: NextRequest) {
   const limit = Math.min(MAX_ROWS, Math.max(1, parseInt(sp.get("limit") || "", 10) || 120));
   const email = (sp.get("email") || "").slice(0, 200);
   const tier = (sp.get("tier") || "").toLowerCase();
+  const adminReq = isAdminRequest(req);
   // The Owner: uncapped crawls. Require BOTH a valid admin request AND an
   // explicit tier=owner, so that on an ungated deployment (ADMIN_SECRET unset,
   // where isAdminRequest is true for everyone) a Free/Pro visitor still can't
   // crawl — only a client acting as the Owner sends tier=owner.
-  const owner = tier === "owner" && isAdminRequest(req);
-  // Ultra can trigger live crawls, capped per day. We identify them by their
-  // email (they're signed in); without one we can't meter, so we don't crawl.
-  const ultra = tier === "ultra" && !!email;
-  const ultraId = email.trim().toLowerCase();
-  const ultraLeft = ultra ? ultraRemaining(ultraId) : 0;
-  // Who may spend an API call on a cache miss: the Owner always, an Ultra user
-  // while under their daily cap and there's budget left. Pro/Free never do.
-  const canCrawl = owner || (ultra && ultraLeft > 0 && budgetLeft() > 0);
+  const owner = tier === "owner" && adminReq;
+  // Ultra authorization is resolved lazily below (after the cache check), since
+  // it needs a Supabase round-trip we don't want on the hot cache-hit path.
+  let ultra = false, ultraLeft = 0, meterId = "";
 
   const key = areaKey(lat, lon, radius, includeSites);
   const slim = (payload: { rows: LeadRow[]; [k: string]: unknown }) =>
@@ -214,11 +251,32 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // 2) Cache miss (or admin forced refresh). A live crawl is billable, so it's
+  // 2) Cache miss (or owner forced refresh). A live crawl is billable, so it's
   //    reserved for the Owner (uncapped) and Ultra (up to ULTRA_DAILY_CALLS a
   //    day). Everyone else — Pro, Free, anonymous, or an Ultra user who's spent
   //    their daily calls — has the area queued and its counter bumped, so the
   //    owner sees demand and requesters get notified once it's loaded.
+  //
+  //    Resolve Ultra authorization from the VERIFIED session, never from the
+  //    client's tier param: a request only earns a live crawl if the signed-in
+  //    user's real profile tier is 'ultra'. (The one exception is the owner
+  //    QA'ing the Ultra experience: a valid admin key on a gated deployment.)
+  if (!owner && tier === "ultra") {
+    const caller = await verifyCaller(req);
+    const isRealUltra = caller?.tier === "ultra";
+    const isOwnerTest = adminGateEnabled && adminReq; // operator previewing Ultra
+    if (isRealUltra || isOwnerTest) {
+      meterId = caller?.id || (isOwnerTest ? "owner-test" : "");
+      if (meterId) {
+        ultra = true;
+        ultraLeft = ultraRemaining(meterId);
+      }
+    }
+  }
+  // Who may spend an API call on this miss: the Owner always, an authorized
+  // Ultra user while under their daily cap and there's budget left.
+  const canCrawl = owner || (ultra && ultraLeft > 0 && budgetLeft() > 0);
+
   if (!canCrawl) {
     const requests = await bumpRequest({ key, label: city || null, lat, lon, radius });
     // Remember a signed-in requester so they can be notified on load.
@@ -247,12 +305,10 @@ export async function GET(req: NextRequest) {
     }, { status: 200 });
   }
 
-  // 3) Crawl path (Owner or an Ultra user with calls left). Count the Ultra
-  //    user's live crawl now — the attempt spends budget whatever it returns,
-  //    so it must count even if the area turns out thin. (Owner is uncapped;
-  //    ultra and owner are mutually exclusive tiers, so this never double-counts.)
-  if (ultra) ultraBump(ultraId);
-  const ultraLeftAfter = ultra ? ultraRemaining(ultraId) : undefined;
+  // 3) Crawl path (Owner or an authorized Ultra user with calls left). The
+  //    Ultra daily counter is bumped only once we actually return fresh data
+  //    (see the final response), so a transient failure or empty area doesn't
+  //    silently burn one of their two crawls.
   const checked = new Date();
   const ctx = { city: city || "Your area", checked };
   const googleFirst = !!process.env.GOOGLE_PLACES_API_KEY;
@@ -338,7 +394,8 @@ export async function GET(req: NextRequest) {
   // future crawl would re-attempt (the area looks "cached"). Instead we return
   // the empty result without saving, so the next owner/Ultra crawl tries again.
   if (newEmpty) {
-    return NextResponse.json({ ...payload, cached: false, saved: false, ultraRemaining: ultraLeftAfter,
+    // No fresh data, so no Ultra call is spent — report their unchanged balance.
+    return NextResponse.json({ ...payload, cached: false, saved: false, ultraRemaining: ultra ? ultraLeft : undefined,
       message: "No businesses came back for this area just now (the data source may be rate-limited). It wasn't cached — try again shortly or widen the radius." });
   }
 
@@ -350,5 +407,7 @@ export async function GET(req: NextRequest) {
     const emails = await notifyFulfilled(key, city || null);
     if (emails.length) await notifyByEmail(emails, city || "your requested area", req.nextUrl.origin);
   } catch { /* notification failures never block a crawl */ }
-  return NextResponse.json({ ...payload, cached: false, ultraRemaining: ultraLeftAfter, rows: rows.slice(0, limit), count: Math.min(rows.length, limit) });
+  // Fresh data is going back — now count the Ultra user's live crawl.
+  if (ultra) ultraBump(meterId);
+  return NextResponse.json({ ...payload, cached: false, ultraRemaining: ultra ? ultraRemaining(meterId) : undefined, rows: rows.slice(0, limit), count: Math.min(rows.length, limit) });
 }

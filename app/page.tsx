@@ -569,7 +569,7 @@ function Screener() {
 
   // was: const [authed, setAuthed] = useState(false);
   // was: const [email, setEmail]   = useState("");
-  const { user, signOut } = useAuth();
+  const { user, session, signOut } = useAuth();
   const authed = !!user;
   const email = user?.email ?? "";
   // Mock settings become account settings. Anonymous: unchanged, localStorage
@@ -865,17 +865,20 @@ function Screener() {
       // the Owner sends the admin key (uncapped); Ultra sends tier=ultra and
       // the server meters it to 2/day; Pro/Free send their tier and the area
       // is queued rather than crawled.
-      // Ultra is metered by email; when the owner tests the Ultra tier while
-      // signed out, use a stable test address so the crawl (and its 2/day cap)
-      // still exercises end to end.
-      const reqEmail = email || (admin && isUltra ? "owner-test@b2web.local" : "");
       const qs = `lat=${lat}&lon=${lng}&radius=${opts.radiusM || 4000}` +
         `&city=${encodeURIComponent(label || "")}&limit=${rowLimit}&tier=${effTier}` +
         (opts.fresh ? "&fresh=1" : "") +
-        (reqEmail ? `&email=${encodeURIComponent(reqEmail)}` : ""); // so we can notify them when it loads
-      // The admin key authorizes an uncapped crawl and is only sent when acting
-      // as the Owner; every other tier relies on the server's tier gating.
-      const r = await fetch(`/api/businesses?${qs}`, isOwner && adminKey ? { headers: { "x-admin-key": adminKey } } : undefined);
+        (email ? `&email=${encodeURIComponent(email)}` : ""); // so we can notify them when it loads
+      // Authorization headers:
+      //  · Bearer session token — lets the server VERIFY the caller's real
+      //    profile tier, so an Ultra live crawl can't be spoofed with a query
+      //    param. (Ultra is authorized by the verified tier, not by the client.)
+      //  · x-admin-key — the operator's secret, sent in owner/test mode so the
+      //    server can grant Owner powers (or let the owner QA the Ultra tier).
+      const headers = {};
+      if (session?.access_token) headers["authorization"] = `Bearer ${session.access_token}`;
+      if (admin && adminKey) headers["x-admin-key"] = adminKey;
+      const r = await fetch(`/api/businesses?${qs}`, Object.keys(headers).length ? { headers } : undefined);
       const j = await r.json();
       if (reqId !== liveReq.current) return null; // superseded by a newer request
       if (!j || !j.ok) throw new Error((j && j.error) || `HTTP ${r.status}`);
@@ -3260,7 +3263,7 @@ function Screener() {
           <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 8 }}>
             Look up no-website businesses in any city. If it&apos;s already loaded you&apos;ll see it instantly.
             {" "}{canCrawl
-              ? (isOwner ? "Otherwise we crawl it now." : `Otherwise we run a live crawl (${ultraLeft != null ? ultraLeft : 2} left today).`)
+              ? (isOwner ? "Otherwise we crawl it now." : `Otherwise we run a live crawl${ultraLeft != null ? ` (${ultraLeft} left today)` : " on demand"}.`)
               : " Otherwise we'll crawl it and notify you when it's ready."}
           </div>
           <input autoFocus value={locSearch} onChange={(e) => setLocSearch(e.target.value)}
@@ -4022,10 +4025,12 @@ const rlFmt = (sec) => (sec >= 60 ? `${Math.floor(sec / 60)}m ${sec % 60}s` : `$
 // production these states are real: the first paint waits on the cache read,
 // and every filter change is an index lookup, not an in-memory array filter.
 function SkeletonRows({ n = 12 }) {
-  // Per-column bar widths (%) mimic the real content rhythm. Every column
-  // except name (0) and website status (5) hides on mobile like the real ones.
-  const cols = [[62, 34], [48], [40], [46], [70, 30], [58], [40], [72]];
-  const mHidden = new Set([1, 2, 3, 4, 6, 7]);
+  // Per-column bar widths (%) mimic the real content rhythm, one entry per
+  // (non-checkbox) table column: name, reviews, stars, address, status, phone.
+  // Every column except name (0) and website status (4) hides on mobile like
+  // the real ones.
+  const cols = [[62, 34], [48], [40], [70, 30], [58], [72]];
+  const mHidden = new Set([1, 2, 3, 5]);
   return (
     <>
       {Array.from({ length: n }).map((_, r) => (

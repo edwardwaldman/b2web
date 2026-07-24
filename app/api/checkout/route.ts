@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 // Stripe Checkout for the paid tiers, no SDK required (plain REST).
 //
-// POST { plan: "starter"|"unlimited", billing: "mo"|"yr", email? }
+// POST { plan: "pro"|"ultra", billing: "wk"|"mo", email? }
 //   -> creates a subscription Checkout Session (1-day trial, card required)
 //      and returns { ok, url } to redirect the visitor to Stripe.
 //      Prices are created inline via price_data, so no dashboard setup is
 //      needed beyond STRIPE_SECRET_KEY. To pin dashboard-managed prices
-//      instead, set STRIPE_PRICE_<PLAN>_<MO|YR> to a price id.
+//      instead, set STRIPE_PRICE_<PLAN>_<WK|MO> to a price id.
 //
 // GET ?session_id=cs_...
 //   -> verifies a returning session server-side and reports whether it is
@@ -16,9 +16,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-// One Pro plan, priced per billing cadence in cents.
+// Two paid tiers, priced per billing cadence in cents.
+//  · Pro   — $25/mo: request any location, we crawl it and notify you.
+//  · Ultra — $200/mo: call the API yourself (live crawls), capped at 2/day.
 const PLANS: Record<string, { name: string; wk: number; mo: number }> = {
-  unlimited: { name: "B2Web Pro", wk: 799, mo: 2500 },
+  pro:   { name: "B2Web Pro",   wk: 799,  mo: 2500 },
+  ultra: { name: "B2Web Ultra", wk: 5900, mo: 20000 },
 };
 
 async function stripe(path: string, form?: Record<string, string>): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -41,7 +44,7 @@ export async function POST(req: NextRequest) {
   if (!process.env.STRIPE_SECRET_KEY) {
     return NextResponse.json({ ok: false, error: "stripe-not-configured" }, { status: 501 });
   }
-  let plan = "unlimited", billing = "mo", email = "", userId = "";
+  let plan = "pro", billing = "mo", email = "", userId = "";
   try {
     const j = await req.json();
     if (j.plan) plan = String(j.plan);
@@ -49,7 +52,8 @@ export async function POST(req: NextRequest) {
     email = String(j.email || "").slice(0, 200);
     userId = String(j.userId || "").slice(0, 64);
   } catch {}
-  const p = PLANS[plan] || PLANS.unlimited;
+  if (!PLANS[plan]) plan = "pro";
+  const p = PLANS[plan];
 
   const origin = req.headers.get("origin") || req.nextUrl.origin;
   const priceId = process.env[`STRIPE_PRICE_${plan.toUpperCase()}_${billing.toUpperCase()}`];
@@ -109,7 +113,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       paid,
-      plan: meta.plan && PLANS[meta.plan] ? meta.plan : (paid ? "unlimited" : null),
+      plan: meta.plan && PLANS[meta.plan] ? meta.plan : (paid ? "pro" : null),
       billing: meta.billing === "wk" ? "wk" : "mo",
       customerEmail: (body.customer_details as { email?: string } | undefined)?.email || null,
     });

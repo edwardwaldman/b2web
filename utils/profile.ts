@@ -12,7 +12,28 @@
 
 import { supabase } from '@/utils/supabase';
 
-export type Tier = 'free' | 'starter' | 'unlimited';
+// Real, purchasable tiers. 'owner' is NOT stored here — it's the password-
+// gated QA/operator mode in the UI, kept deliberately separate from 'ultra'.
+export type Tier = 'free' | 'pro' | 'ultra';
+// Old rows used starter/unlimited before the rename; map them forward so a
+// pre-existing profile keeps working. The old app sold exactly ONE paid plan
+// ("Pro", $25/mo) whose internal id was 'unlimited', so BOTH legacy paid ids
+// map to 'pro' — never to 'ultra'. Mapping them to 'ultra' would hand every
+// old $25/mo customer the new $200/mo live-crawl tier for free. Anything
+// unknown falls back to free.
+export function normalizeTier(v: unknown): Tier {
+  switch (v) {
+    case 'pro':
+    case 'ultra':
+    case 'free':
+      return v;
+    case 'starter':
+    case 'unlimited':
+      return 'pro';
+    default:
+      return 'free';
+  }
+}
 export type Theme = 'light' | 'dark' | 'pitch';
 export type Keybinds = { phone: string; reviews: string; web: string; map: string };
 export type NotifPrefs = { newLeads: boolean; priceDrops: boolean; weekly: boolean; product: boolean };
@@ -42,7 +63,7 @@ export async function fetchProfile(userId: string): Promise<Profile | null> {
   if (!data) return null;
   return {
     id: data.id,
-    tier: data.tier as Tier,
+    tier: normalizeTier(data.tier),
     theme: data.theme as Theme,
     keybinds: data.keybinds as Keybinds,
     notifPrefs: data.notif_prefs as NotifPrefs,

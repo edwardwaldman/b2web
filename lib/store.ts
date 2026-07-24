@@ -44,6 +44,8 @@
 // therefore need SUPABASE_SERVICE_ROLE_KEY to persist; with only the anon key
 // the cache persists and notifications simply stay in-memory.
 
+import { seedFor } from "@/lib/seed";
+
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
@@ -107,14 +109,18 @@ const memCache = new Map<string, CacheRow>();
 const memReq = new Map<string, RequestRow>();
 
 // ── Cache ───────────────────────────────────────────────────────────────────
+// A real durable/in-memory row always wins; the built-in seed (seedFor) is only
+// a floor, so a saved snapshot area (e.g. the default Lowell view) is served
+// with no crawl even before any owner crawl exists, and an owner/Ultra crawl
+// still overwrites it.
 export async function getCache(key: string): Promise<CacheRow | null> {
-  if (!durableConfigured) return memCache.get(key) || null;
+  if (!durableConfigured) return memCache.get(key) || seedFor(key);
   try {
     const r = await sb(`location_cache?key=eq.${encodeURIComponent(key)}&select=*&limit=1`);
-    if (!r.ok) return null;
+    if (!r.ok) return seedFor(key);
     const rows = (await r.json()) as CacheRow[];
-    return rows[0] || null;
-  } catch { return null; }
+    return rows[0] || seedFor(key);
+  } catch { return seedFor(key); }
 }
 
 export async function setCache(row: CacheRow): Promise<void> {

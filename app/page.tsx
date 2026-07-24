@@ -166,6 +166,7 @@ function Icon({ k, size = 12, fill = "none" }) {
     search: <><circle cx="11" cy="11" r="6.5" /><path d="M20.5 20.5l-4.6-4.6" /></>,
     share: <><path d="M4 12.5v6A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5v-6" /><path d="M12 14.5V3.5M7.5 7.5 12 3l4.5 4.5" /></>,
     user: <><circle cx="12" cy="8" r="4" /><path d="M4 20a8 8 0 0 1 16 0" /></>,
+    menu: <path d="M4 7h16M4 12h16M4 17h16" />,
     expand: <><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></>,
     spinner: <><path d="M12 3a9 9 0 1 0 9 9" /></>,
     bell: <><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6" /><path d="M10.5 19.5a2 2 0 0 0 3 0" /></>,
@@ -972,12 +973,33 @@ function Screener() {
       .finally(() => enrichBusy.current.delete(d.id));
   };
 
-  // Locate: real browser geolocation -> reverse geocode -> real business
-  // crawl for that spot, plus the nearest-first sort. The nearest-city table
-  // is only the label fallback when the geocoder is unreachable. Switching
-  // the cache to a non-SF city stays the signup gate for anonymous visitors.
+  // Register a caching request for an area WITHOUT touching the current view.
+  // The server queues it (Free/Pro can't crawl), so the owner sees demand and
+  // the requester is notified once it's loaded. Returns the parsed response.
+  const submitLocationRequest = async (lat, lng, label) => {
+    try {
+      const headers = {};
+      if (session?.access_token) headers["authorization"] = `Bearer ${session.access_token}`;
+      const qs = `lat=${lat}&lon=${lng}&radius=4000&tier=${effTier}` +
+        `&city=${encodeURIComponent(label || "")}` +
+        (email ? `&email=${encodeURIComponent(email)}` : "");
+      const r = await fetch(`/api/businesses?${qs}`, Object.keys(headers).length ? { headers } : undefined);
+      const j = await r.json();
+      return j && j.ok ? j : null;
+    } catch { return null; }
+  };
+
+  // Locate: browser geolocation -> reverse geocode. What happens next depends
+  // on the tier:
+  //  · Logged out — never prompt for location; route straight to signup.
+  //  · Free/Pro — submit a caching request for the detected area and confirm
+  //    with a popup. The current view is left exactly as it is: no crawl, no
+  //    relabel, no nearest-first re-sort (it keeps showing the default cache).
+  //  · Ultra/Owner — switch to the detected area and load it (crawl or cache),
+  //    sorted nearest-first.
   const locate = () => {
     if (locating) return;
+    if (!authed && !admin) { goToLogin(); return; } // logged out: go to signup, don't ask for location
     const fail = (msg) => { setLocating(false); flashGeo(msg); };
     if (typeof navigator === "undefined" || !navigator.geolocation) {
       flashGeo("This browser cannot share a location."); return;
@@ -996,25 +1018,32 @@ function Screener() {
         label = best.n;
       }
       setLocating(false);
-      setGeo({ lat, lng, city: label });
-      setSort({ key: "dist", dir: "asc" });
-      if (admin || authed || label.startsWith(DEFAULT_LOC.label.split(",")[0])) {
+      if (canCrawl) {
+        // Ultra/Owner: switch to and load the detected area, nearest-first.
+        setGeo({ lat, lng, city: label });
+        setSort({ key: "dist", dir: "asc" });
         setLocCity(label);
-        // Free/Pro can't crawl: loadLive queues the area and returns pending.
-        // Show the detected place, then a "we'll notify you" popup. Owner/Ultra
-        // (or a cached area) get the data instead, and no popup.
         const j = await loadLive(lat, lng, label);
         if (j && j.pending) setNotifyPopup({ label, requests: j.requests, ultraLimited: !!j.ultraLimited });
       } else {
-        setPendingCity(label);
-        setPendingCoords({ lat, lng });
-        goToLogin();
+        // Free/Pro: queue a caching request and confirm. Do NOT change the
+        // view — no setGeo/setSort/setLocCity/loadLive — so the background
+        // stays on the current cache instead of jumping to the detected city.
+        const j = await submitLocationRequest(lat, lng, label);
+        setNotifyPopup({ label, requests: (j && j.requests) || 1, submitted: true });
       }
     }, (err) => {
       fail(err && err.code === 1
         ? "Location permission denied. Allow access and try again."
         : "Could not detect your location. Try again.");
     }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
+  };
+
+  // Opening the location popover is signup-gated: a logged-out visitor goes
+  // straight to signup instead of seeing the detect prompt.
+  const openLocPrompt = (coords) => {
+    if (!authed && !admin) { goToLogin(); return; }
+    setLocPrompt(coords);
   };
 
   // Refresh (owner + Ultra): re-crawl the current area now. Owner is throttled
@@ -1595,7 +1624,7 @@ function Screener() {
   // space; every action delegates to the same handlers the desktop uses.
   const mnavItems = [
     { key: "search", label: "Search businesses", hint: "/", onClick: () => searchInputRef.current?.focus() },
-    { key: "loc", label: locating ? "Locating..." : `Location: ${locCity}`, onClick: () => setLocPrompt({ x: 8, y: 56 }) },
+    { key: "loc", label: locating ? "Locating..." : `Location: ${locCity}`, onClick: () => openLocPrompt({ x: 8, y: 56 }) },
     { key: "alerts", label: "No-website alerts", hint: isPaid ? null : "Paid", onClick: () => (isPaid
       ? flashGeo("Alerts are armed: new no-website listings will notify you")
       : openUnlimitedAt({ title: "Alerts", body: "Get notified the moment a new no-website business appears in your categories and area. Alerts ship with the paid plans." })) },
@@ -1684,7 +1713,7 @@ function Screener() {
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
               const vw = window.innerWidth || 1200;
-              setLocPrompt({ x: Math.max(8, Math.min(r.left, vw - 288)), y: r.bottom + 6 });
+              openLocPrompt({ x: Math.max(8, Math.min(r.left, vw - 288)), y: r.bottom + 6 });
             }}
             title="Change location">
             <Icon k="target" size={11} />
@@ -1753,12 +1782,16 @@ function Screener() {
           ) : null}
           {authed ? (
             <span ref={acctRef} style={{ position: "relative", display: "inline-flex" }}>
-              <button className="btnO" style={{ ...S.outBtn, padding: "6px 12px", maxWidth: 180, whiteSpace: "nowrap" }}
-                onClick={() => setAcctMenu((v) => !v)} aria-haspopup="menu" aria-expanded={acctMenu}>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{email || "Account"}</span>
+              <button className="btnO" style={{ ...S.outBtn, padding: "6px 10px" }}
+                onClick={() => setAcctMenu((v) => !v)} aria-haspopup="menu" aria-expanded={acctMenu}
+                aria-label="Account menu" title={email || "Account"}>
+                <Icon k="menu" size={16} />
               </button>
               {acctMenu && (
                 <span style={S.acctMenu} role="menu" aria-label="Account">
+                  {email && (
+                    <span style={{ display: "block", padding: "6px 12px", fontSize: 10.5, color: MUTED, borderBottom: `1px solid ${LINE}`, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>{email}</span>
+                  )}
                   <button className="acctItem" style={S.acctItem} role="menuitem"
                     onClick={() => { setAcctMenu(false); setAcctOpen(true); }}>Manage account</button>
                   <button className="acctItem" style={S.acctItem} role="menuitem"
@@ -2023,7 +2056,7 @@ function Screener() {
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
               const vw = window.innerWidth || 1200;
-              setLocPrompt({ x: Math.max(8, Math.min(r.left, vw - 288)), y: r.bottom + 6 });
+              openLocPrompt({ x: Math.max(8, Math.min(r.left, vw - 288)), y: r.bottom + 6 });
             }}
             title="Find my city and sort businesses nearest first">
             <Icon k="target" size={12} />
@@ -3317,11 +3350,14 @@ function Screener() {
               <Icon k="bell" size={18} />
             </div>
             <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 6 }}>
-              {notifyPopup.ultraLimited ? "Daily crawls used up" : "We’re on it"}
+              {notifyPopup.ultraLimited ? "Daily crawls used up" : notifyPopup.submitted ? "Request submitted" : "We’re on it"}
             </div>
             <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.55, marginBottom: 14 }}>
               {notifyPopup.ultraLimited ? (
                 <>You&apos;ve used today&apos;s live crawls for <strong style={{ color: TEXT }}>{notifyPopup.label}</strong>. It&apos;s queued — you&apos;ll be notified here and by email when it&apos;s ready, or run it yourself again tomorrow.</>
+              ) : notifyPopup.submitted ? (
+                <>Your request for <strong style={{ color: TEXT }}>{notifyPopup.label}</strong> was submitted — we&apos;ll be caching it soon and notify you here and by email the moment it&apos;s ready.
+                {notifyPopup.requests > 1 ? ` ${notifyPopup.requests} people have asked for it.` : ""}</>
               ) : (
                 <><strong style={{ color: TEXT }}>{notifyPopup.label}</strong> isn&apos;t loaded yet. You&apos;ll be notified here and by email the moment it&apos;s ready
                 {notifyPopup.requests > 1 ? ` — ${notifyPopup.requests} people are waiting for it.` : "."}</>
@@ -3339,7 +3375,7 @@ function Screener() {
           <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 10 }}>
             {canCrawl
               ? "Your browser will ask for permission, then we detect your position, resolve your city, and crawl the real businesses around you (OpenStreetMap, Google listing checks, registry)."
-              : "Your browser will ask for permission, then we detect your position and resolve your city. We'll load that area and notify you here and by email the moment it's ready."}
+              : "Your browser will ask for permission, then we detect your city and submit a caching request for it. Your current view stays put — we'll notify you here and by email the moment your area is ready."}
           </div>
           <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }}
             onClick={() => {
@@ -3352,7 +3388,7 @@ function Screener() {
                 ? "Detecting your location and crawling the businesses around you."
                 : "Detecting your location…");
             }}>
-            <Icon k="target" size={12} /> {canCrawl ? "Detect my location" : "Detect my location"}
+            <Icon k="target" size={12} /> Detect my location
           </button>
           {!authed && !admin && (
             <div style={{ fontSize: 10, color: FAINT, marginTop: 8, lineHeight: 1.5 }}>

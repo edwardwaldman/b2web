@@ -52,40 +52,57 @@ function budgetLeft(): number {
   return DAILY_BUDGET - budget.used;
 }
 
-// Per-user daily cap on live crawls for the Ultra tier. The Owner (admin key)
-// is uncapped; Pro and Free never crawl at all (their requests are queued).
-// Tracked in-process per identity/day — same pragmatic model as the budget
-// above: it shapes honest traffic, and the global DAILY_BUDGET still hard-caps
-// total spend regardless of how many identities claim Ultra. Raise the cap
-// with ULTRA_DAILY_CALLS.
-const ULTRA_DAILY_CALLS = Math.max(1, parseInt(process.env.ULTRA_DAILY_CALLS || "", 10) || 2);
-const ultraDay = { day: "", by: new Map<string, number>() };
-function ultraUsed(id: string): number {
-  const today = new Date().toISOString().slice(0, 10);
-  if (ultraDay.day !== today) { ultraDay.day = today; ultraDay.by = new Map(); }
-  return ultraDay.by.get(id) || 0;
-}
-function ultraRemaining(id: string): number {
-  return Math.max(0, ULTRA_DAILY_CALLS - ultraUsed(id));
-}
-function ultraBump(id: string): void {
-  ultraDay.by.set(id, ultraUsed(id) + 1);
+// Per-tier live-crawl limits. A live crawl is billable, so it's session-gated
+// (verified profile tier) and rate-limited per user; the global DAILY_BUDGET
+// still hard-caps total spend. A cache hit never counts — only a crawl that
+// actually spends does.
+//   · Free  — their own location, capped to FREE_ROWS rows, FREE_DAILY_CRAWLS
+//             new-area crawls per day.
+//   · Pro   — their own location, capped to PRO_ROWS rows, PRO_DAILY_CRAWLS/day.
+//   · Ultra — ANY location, uncapped rows, at most one crawl every
+//             ULTRA_COOLDOWN_MIN minutes.
+//   · Owner — uncapped.
+// All counters are in-process per instance (same pragmatic model as the budget
+// above); the global budget bounds total spend across instances/identities.
+const FREE_ROWS = Math.max(1, parseInt(process.env.FREE_ROWS || "", 10) || 5);
+const PRO_ROWS = Math.max(1, parseInt(process.env.PRO_ROWS || "", 10) || 20);
+const FREE_DAILY_CRAWLS = Math.max(0, parseInt(process.env.FREE_DAILY_CRAWLS || "", 10) || 1);
+const PRO_DAILY_CRAWLS = Math.max(1, parseInt(process.env.PRO_DAILY_CRAWLS || "", 10) || 3);
+const ULTRA_COOLDOWN_MIN = Math.max(1, parseInt(process.env.ULTRA_COOLDOWN_MINUTES || "", 10) || 10);
+const ULTRA_COOLDOWN_MS = ULTRA_COOLDOWN_MIN * 60 * 1000;
+
+// How many rows a tier may see in one response (cache hits included). Keyed on
+// the CLIENT-declared tier — not security-sensitive (it only limits how much
+// public cached data is shown), and keeping it off the verified path avoids a
+// Supabase round-trip on every cache read.
+function rowCapFor(tier: string): number {
+  if (tier === "free") return FREE_ROWS;
+  if (tier === "pro") return PRO_ROWS;
+  return MAX_ROWS; // ultra / owner / unknown
 }
 
-// Refreshing an area you're already viewing is a separate action from
-// requesting a NEW area: Ultra may re-crawl the current cache on demand, but
-// no faster than once every ULTRA_REFRESH_MIN minutes (per user), and it does
-// NOT draw down the daily new-area cap above. Authoritative server throttle so
-// it can't be beaten by editing the client. In-process, like the counters above.
-const ULTRA_REFRESH_MIN = Math.max(1, parseInt(process.env.ULTRA_REFRESH_MINUTES || "", 10) || 10);
-const ULTRA_REFRESH_MS = ULTRA_REFRESH_MIN * 60 * 1000;
-const ultraRefreshAt = new Map<string, number>();
-function ultraRefreshAllowed(id: string): boolean {
-  return Date.now() - (ultraRefreshAt.get(id) || 0) >= ULTRA_REFRESH_MS;
+// Per-user daily crawl counter for Free/Pro (in-process, per day).
+const dayLog = { day: "", by: new Map<string, number>() };
+function dailyUsed(id: string): number {
+  const today = new Date().toISOString().slice(0, 10);
+  if (dayLog.day !== today) { dayLog.day = today; dayLog.by = new Map(); }
+  return dayLog.by.get(id) || 0;
 }
-function ultraRefreshMark(id: string): void {
-  ultraRefreshAt.set(id, Date.now());
+function dailyRemaining(id: string, max: number): number { return Math.max(0, max - dailyUsed(id)); }
+function dailyBump(id: string): void { dayLog.by.set(id, dailyUsed(id) + 1); }
+function dailyMaxFor(tier: string): number {
+  return tier === "pro" ? PRO_DAILY_CRAWLS : FREE_DAILY_CRAWLS;
 }
+
+// Per-user crawl cooldown for Ultra (authoritative 10-min throttle).
+const ultraAt = new Map<string, number>();
+function ultraCooldownOk(id: string): boolean {
+  return Date.now() - (ultraAt.get(id) || 0) >= ULTRA_COOLDOWN_MS;
+}
+function ultraCooldownLeftMs(id: string): number {
+  return Math.max(0, ULTRA_COOLDOWN_MS - (Date.now() - (ultraAt.get(id) || 0)));
+}
+function ultraMark(id: string): void { ultraAt.set(id, Date.now()); }
 
 // ── Caller identity / entitlement ───────────────────────────────────────────
 // A live crawl is billable, so authorizing it on a client-supplied `tier` param
@@ -243,88 +260,106 @@ export async function GET(req: NextRequest) {
   // where isAdminRequest is true for everyone) a Free/Pro visitor still can't
   // crawl — only a client acting as the Owner sends tier=owner.
   const owner = tier === "owner" && adminReq;
-  // Ultra authorization needs a Supabase round-trip, so it's resolved lazily
-  // (never on the hot cache-hit read path). A forced refresh has to know the
-  // caller's tier BEFORE the cache-serve decision, so resolveUltra is also
-  // called eagerly in that case. It's idempotent — safe to call more than once.
-  //
-  // Authorization comes from the VERIFIED session, never the client's tier
-  // param: a request only earns a live crawl if the signed-in user's real
-  // profile tier is 'ultra'. (The one exception is the owner QA'ing the Ultra
-  // experience: a valid admin key on a gated deployment.)
-  let ultra = false, ultraLeft = 0, meterId = "", ultraResolved = false;
-  const resolveUltra = async () => {
-    if (ultraResolved) return;
-    ultraResolved = true;
-    if (owner || tier !== "ultra") return;
+
+  // How many rows this response may return (cache hits included). Capped by the
+  // CLIENT-declared tier — not security-sensitive, and kept off the verified
+  // path so a plain cache read never pays for a Supabase round-trip.
+  const effLimit = Math.min(limit, owner ? MAX_ROWS : rowCapFor(tier));
+
+  // Verified caller identity + REAL profile tier, resolved from the session
+  // (never the client's tier param). Owner is authorized by the admin key. The
+  // resolve is lazy — only a crawl (cache miss) or a forced refresh needs it.
+  let vtier = "", meterId = "", resolved = false;
+  const resolve = async () => {
+    if (resolved) return;
+    resolved = true;
+    if (owner) { vtier = "owner"; meterId = "owner"; return; }
     const caller = await verifyCaller(req);
-    const isRealUltra = caller?.tier === "ultra";
-    const isOwnerTest = adminGateEnabled && adminReq; // operator previewing Ultra
-    if (isRealUltra || isOwnerTest) {
-      meterId = caller?.id || (isOwnerTest ? "owner-test" : "");
-      if (meterId) { ultra = true; ultraLeft = ultraRemaining(meterId); }
+    if (caller?.id) { vtier = caller.tier; meterId = caller.id; return; }
+    // Owner QA'ing a lower tier via the TEST switch: a valid admin key on a
+    // gated deployment stands in for a real session, using the client's tier.
+    if (adminGateEnabled && adminReq) { vtier = normTier(tier); meterId = "owner-test"; }
+  };
+
+  // Whether the VERIFIED tier may spend a billable crawl right now, plus why
+  // not. Free/Pro: their own location, under a per-day cap. Ultra: any location,
+  // at most one crawl every ULTRA_COOLDOWN_MIN minutes. Owner: always.
+  const crawlDecision = (): { ok: boolean; reason?: string; cooldownMs?: number; max?: number } => {
+    if (owner) return { ok: true };
+    if (budgetLeft() <= 0) return { ok: false, reason: "budget" };
+    if (vtier === "ultra") {
+      return ultraCooldownOk(meterId)
+        ? { ok: true }
+        : { ok: false, reason: "cooldown", cooldownMs: ultraCooldownLeftMs(meterId) };
     }
+    if (vtier === "pro" || vtier === "free") {
+      const max = dailyMaxFor(vtier);
+      return dailyRemaining(meterId, max) > 0 ? { ok: true } : { ok: false, reason: "daily", max };
+    }
+    return { ok: false, reason: "anon" }; // not signed in
   };
 
   const key = areaKey(lat, lon, radius, includeSites);
   const slim = (payload: { rows: LeadRow[]; [k: string]: unknown }) =>
-    ({ ...payload, cached: true, rows: payload.rows.slice(0, limit), count: Math.min(payload.rows.length, limit) });
+    ({ ...payload, cached: true, rows: payload.rows.slice(0, effLimit), count: Math.min(payload.rows.length, effLimit) });
 
-  // 1) Shared cache. Anyone may READ it. Serve it unless this is an authorized
-  //    forced re-crawl of an already-cached area:
+  // 1) Shared cache. Anyone may READ it (capped to their tier's row limit).
+  //    Serve it unless this is an authorized forced re-crawl of a cached area:
   //    · Owner — any time (subject to the 2-min per-area cooldown).
-  //    · Ultra — the "Refresh" action: re-crawl the area they're viewing, at
-  //      most once every ULTRA_REFRESH_MIN minutes per user. This is a SEPARATE
-  //      limit from the daily new-area cap, so a refresh never costs a daily
-  //      call. (fresh=1 is only ever sent by the Owner/Ultra refresh action.)
+  //    · Ultra — the "Refresh" action, at most once every ULTRA_COOLDOWN_MIN
+  //      minutes per user. (fresh=1 is only sent by the Owner/Ultra refresh.)
   //    A cached-but-EMPTY row (rows: []) is treated as a miss, not a hit.
   const cached = await getCache(key);
   const cachedPayload = cached?.payload as { checkedAt?: string; rows?: LeadRow[] } | undefined;
   const hasCachedRows = !!cachedPayload?.rows?.length;
-  if (fresh) await resolveUltra();
+  if (fresh) await resolve();
   const isRefresh = fresh && hasCachedRows; // re-crawl of an area already cached
   if (hasCachedRows) {
     const fresherThanCooldown = cached && Date.now() - Date.parse(cached.checked_at) < FRESH_COOLDOWN_MS;
     const ownerRecrawl = fresh && owner && !fresherThanCooldown;
-    const ultraRecrawl = fresh && ultra && !fresherThanCooldown && ultraRefreshAllowed(meterId);
+    const ultraRecrawl = fresh && vtier === "ultra" && !fresherThanCooldown && ultraCooldownOk(meterId);
     if (!(ownerRecrawl || ultraRecrawl)) {
       return NextResponse.json(slim(cachedPayload as { rows: LeadRow[] }));
     }
-    // Committing to a re-crawl: stamp the Ultra refresh throttle now so rapid
-    // re-clicks (or a spoofed client) can't beat the once-per-window limit.
-    if (ultraRecrawl) ultraRefreshMark(meterId);
+    if (ultraRecrawl) ultraMark(meterId); // stamp the cooldown on commit
   }
 
-  // 2) Cache miss (or an authorized forced refresh). Resolve Ultra (no-op if
-  //    already done) and decide who may spend a billable crawl. Everyone who
-  //    can't — Pro, Free, anonymous, or an Ultra user out of daily calls on a
-  //    NEW area — has the area queued so the owner sees demand and requesters
+  // 2) Cache miss (or an authorized forced refresh). Resolve the caller and
+  //    decide who may spend a billable crawl. Everyone who can't — anonymous, a
+  //    Free/Pro user out of their daily crawls, or an Ultra user still on
+  //    cooldown — has the area queued so the owner sees demand and requesters
   //    are notified once it's loaded.
-  await resolveUltra();
-  // Owner: always. Ultra: for a refresh, regardless of the daily cap (it's
-  // throttled separately above); for a NEW area, only while under the daily
-  // cap. Budget must remain either way.
-  const canCrawl = owner || (ultra && budgetLeft() > 0 && (isRefresh || ultraLeft > 0));
+  await resolve();
+  const decision = isRefresh ? { ok: true } : crawlDecision();
+  const canCrawl = decision.ok;
+  // Stamp the Ultra cooldown for a NEW-area crawl at authorization (a refresh
+  // was already stamped above), so rapid re-clicks can't beat the window.
+  if (canCrawl && !isRefresh && vtier === "ultra") ultraMark(meterId);
+
+  const crawlsLeft = (vtier === "free" || vtier === "pro")
+    ? dailyRemaining(meterId, dailyMaxFor(vtier)) : undefined;
+  const cooldownMs = vtier === "ultra" ? ultraCooldownLeftMs(meterId) : undefined;
 
   if (!canCrawl) {
     const requests = await bumpRequest({ key, label: city || null, lat, lon, radius });
     // Remember a signed-in requester so they can be notified on load.
     if (email) await subscribeRequest(key, email);
-    // An Ultra user who's out of THEIR daily calls is a distinct case: tell
-    // them so. (If instead the global budget is spent, fall through to the
-    // generic "you'll be notified" message — they haven't used their calls.)
-    const ultraCapped = ultra && ultraLeft <= 0;
-    const message = ultraCapped
-      ? `You've used your ${ULTRA_DAILY_CALLS} live crawls for today. This area is queued — you'll be notified when it's ready, or try again tomorrow.`
-      : "This area isn't loaded yet. You'll be notified when it's ready.";
+    let message = "This area isn't loaded yet. You'll be notified when it's ready.";
+    if (decision.reason === "cooldown") {
+      const mins = Math.ceil((decision.cooldownMs || 0) / 60000);
+      message = `Ultra can crawl a new area once every ${ULTRA_COOLDOWN_MIN} minutes. It's queued — try again in about ${mins} min, or you'll be notified when it's ready.`;
+    } else if (decision.reason === "daily") {
+      message = `You've used your ${decision.max} live crawl${decision.max === 1 ? "" : "s"} for today. This area is queued — you'll be notified when it's ready, or try again tomorrow.`;
+    }
     return NextResponse.json({
       ok: true,
       cached: false,
       pending: true,
       gated: adminGateEnabled,
       tier: tier || null,
-      ultraLimited: ultraCapped,
-      ultraRemaining: ultra ? ultraLeft : undefined,
+      limited: decision.reason || null,
+      cooldownMs: decision.reason === "cooldown" ? decision.cooldownMs : undefined,
+      crawlsLeft,
       requests,
       label: city || null,
       lat, lon, radiusM: radius,
@@ -334,10 +369,10 @@ export async function GET(req: NextRequest) {
     }, { status: 200 });
   }
 
-  // 3) Crawl path (Owner or an authorized Ultra user with calls left). The
-  //    Ultra daily counter is bumped only once we actually return fresh data
-  //    (see the final response), so a transient failure or empty area doesn't
-  //    silently burn one of their two crawls.
+  // 3) Crawl path (Owner, or an authorized Free/Pro/Ultra user). A Free/Pro
+  //    daily crawl is charged only once we actually return fresh data (see the
+  //    final response), so a transient failure or empty area doesn't burn their
+  //    allowance. (Ultra's cooldown was already stamped at authorization.)
   const checked = new Date();
   const ctx = { city: city || "Your area", checked };
   const googleFirst = !!process.env.GOOGLE_PLACES_API_KEY;
@@ -423,8 +458,9 @@ export async function GET(req: NextRequest) {
   // future crawl would re-attempt (the area looks "cached"). Instead we return
   // the empty result without saving, so the next owner/Ultra crawl tries again.
   if (newEmpty) {
-    // No fresh data, so no Ultra call is spent — report their unchanged balance.
-    return NextResponse.json({ ...payload, cached: false, saved: false, ultraRemaining: ultra ? ultraLeft : undefined,
+    // No fresh data, so no Free/Pro daily crawl is charged — report the
+    // unchanged balance/cooldown.
+    return NextResponse.json({ ...payload, cached: false, saved: false, crawlsLeft, cooldownMs,
       message: "No businesses came back for this area just now (the data source may be rate-limited). It wasn't cached — try again shortly or widen the radius." });
   }
 
@@ -436,9 +472,10 @@ export async function GET(req: NextRequest) {
     const emails = await notifyFulfilled(key, city || null);
     if (emails.length) await notifyByEmail(emails, city || "your requested area", req.nextUrl.origin);
   } catch { /* notification failures never block a crawl */ }
-  // Fresh data is going back — count the Ultra user's live crawl, but ONLY for
-  // a new area. A refresh of an already-cached area is throttled by its own
-  // per-user window (step 1) and never draws down the daily new-area cap.
-  if (ultra && !isRefresh) ultraBump(meterId);
-  return NextResponse.json({ ...payload, cached: false, ultraRemaining: ultra ? ultraRemaining(meterId) : undefined, rows: rows.slice(0, limit), count: Math.min(rows.length, limit) });
+  // Fresh data is going back — charge a Free/Pro daily crawl now (Ultra's
+  // cooldown was already stamped at authorization; a refresh isn't charged).
+  if ((vtier === "free" || vtier === "pro") && !isRefresh) dailyBump(meterId);
+  const crawlsLeftAfter = (vtier === "free" || vtier === "pro")
+    ? dailyRemaining(meterId, dailyMaxFor(vtier)) : undefined;
+  return NextResponse.json({ ...payload, cached: false, crawlsLeft: crawlsLeftAfter, cooldownMs, rows: rows.slice(0, effLimit), count: Math.min(rows.length, effLimit) });
 }

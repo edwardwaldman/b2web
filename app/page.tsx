@@ -113,22 +113,29 @@ const BLUE = "var(--blue)";        // links, focus, selection accent
 const BLUE_DEEP = "var(--blue-deep)";   // primary buttons
 
 // Pricing: two paid tiers, billed weekly or monthly, each behind a 1-day
-// card-required free trial. The difference is who runs the crawl:
-//  · Pro ($25/mo)   — you request any location, we crawl it for you and notify
-//                     you the moment it's ready. No live API access.
-//  · Ultra ($200/mo)— you call the API yourself: live crawls on demand, capped
-//                     at 2 per day. Everything in Pro, plus instant results.
+// card-required free trial. Tiers differ by how much of YOUR area you see and
+// whether you can crawl other places:
+//  · Free           — your own location, up to 5 businesses.
+//  · Pro ($25/mo)   — your own location, up to 20 businesses; no ads, exports,
+//                     compare, AI prompts.
+//  · Ultra ($200/mo)— crawl ANY location live, unlimited leads, 10-min cooldown.
 // The Owner tier (operator/QA) is not sold here; it's the password-gated test
 // mode and is deliberately separate from Ultra.
 const PLANS = [
-  { id: "pro", name: "Pro", wk: 7.99, mo: 25, calls: "Request any location",
-    feats: ["Request any location", "We crawl it and notify you", "No ads", "No result caps", "Copy all reviews", "Compare + saved lists"] },
-  { id: "ultra", name: "Ultra", wk: 59, mo: 200, calls: "2 live crawls / day",
-    feats: ["Everything in Pro", "Call the API yourself", "Live crawls on demand", "2 live crawls per day", "Instant results, no waiting"] },
+  { id: "pro", name: "Pro", wk: 7.99, mo: 25, calls: "Your area, 20 leads",
+    feats: ["Up to 20 leads in your area", "No ads", "Copy all reviews", "Compare + saved lists", "Export to CSV", "AI build prompts"] },
+  { id: "ultra", name: "Ultra", wk: 59, mo: 200, calls: "Any location, live",
+    feats: ["Everything in Pro", "Crawl ANY location", "Live crawls on demand", "Unlimited leads per area", "10-minute cooldown between crawls"] },
 ];
 const planPrice = (pl, billing) => (billing === "wk" ? pl.wk : pl.mo);
 const priceUnit = (billing) => (billing === "wk" ? "/week" : "/month");
 const fmtPrice = (n) => (Number.isInteger(n) ? `$${n}` : `$${n.toFixed(2)}`);
+
+// Businesses a tier sees from a location (mirrors the server-side caps in
+// app/api/businesses/route.ts). Free gets a taste of their own area; Pro gets
+// more; Ultra/Owner see everything.
+const FREE_ROWS = 5;
+const PRO_ROWS = 20;
 
 // All business data is real and fetched at runtime from /api/businesses
 // (Google Places when a key is configured, OpenStreetMap otherwise). There is
@@ -473,7 +480,8 @@ function Screener() {
   const [exportMenu, setExportMenu] = useState(false);
   const exportRef = useRef(null);
   const [tier, setTier] = useState("free");        // "free" | "pro" | "ultra"
-  const [ultraLeft, setUltraLeft] = useState(null); // ultra: live crawls remaining today (from the server)
+  const [crawlsLeft, setCrawlsLeft] = useState(null); // free/pro: daily crawls remaining (from the server)
+  const [cooldownMs, setCooldownMs] = useState(0);    // ultra: ms until the next crawl is allowed
   const [gateMode, setGateMode] = useState("signup"); // wall gate mode
   const [gateEmail, setGateEmail] = useState(false);  // gate: email form revealed
   const [gateConsent, setGateConsent] = useState(true);
@@ -626,13 +634,13 @@ function Screener() {
     // Real crawled businesses only. Before the first fetch (or after a failed
     // one) the pool is empty and the table shows skeletons or the error state.
     if (!liveRows || !liveRows.length) return [];
-    // The free slice is capped (20 rows, 40 after the rewarded ad); every paid
-    // tier sees the whole crawl. The owner's row editor caps the slice too —
-    // it never generates data.
-    let base = isPaid ? liveRows : liveRows.slice(0, extra ? 40 : 20);
+    // Row caps by tier: Free sees 5, Pro sees 20, Ultra/Owner see the whole
+    // crawl. (The server caps the payload the same way; this keeps the UI
+    // honest even if more rows arrive.) The owner's row editor caps too.
+    let base = isUltra || isOwner ? liveRows : liveRows.slice(0, isPro ? PRO_ROWS : FREE_ROWS);
     if (isOwner && adminRows != null) base = base.slice(0, Math.max(1, adminRows));
     return base;
-  }, [isOwner, isPaid, adminRows, extra, liveRows]);
+  }, [isOwner, isUltra, isPro, adminRows, liveRows]);
 
   // Category options track whatever is actually in the pool.
   const catOpts = useMemo(
@@ -679,7 +687,7 @@ function Screener() {
     return r;
   }, [pool, cat, minRev, minStars, hood, onlyLeads, sort, geo, excludeContacted, contacted, isOwner, multiCatOn, cats, radiusOn, radiusMi]);
 
-  const freeCap = extra ? 40 : 20;
+  const freeCap = isPro ? PRO_ROWS : FREE_ROWS;
 
   const findBiz = (name) => pool.find((d) => d.name === name) || null;
   const selBiz = selected ? findBiz(selected) : null;
@@ -861,14 +869,12 @@ function Screener() {
           if (g && g.ok && g.label) label = g.label;
         } catch {}
       }
-      // Only pull what this tier can show: the free slice needs 40 rows at
-      // most, which keeps payloads small and lets the server cache serve
-      // everyone from one crawl.
-      const rowLimit = isPaid ? 400 : 40;
-      // Tell the server which tier is asking so it can authorize the crawl:
-      // the Owner sends the admin key (uncapped); Ultra sends tier=ultra and
-      // the server meters it to 2/day; Pro/Free send their tier and the area
-      // is queued rather than crawled.
+      // Only pull what this tier can show (the server caps this too): Free 5,
+      // Pro 20, Ultra/Owner the full crawl. Keeps payloads small.
+      const rowLimit = isUltra || isOwner ? 400 : isPro ? PRO_ROWS : FREE_ROWS;
+      // Tell the server which tier is asking so it can authorize the crawl and
+      // cap the rows. The server verifies the real tier from the session token
+      // (below) before spending any Google budget; the param is just a hint.
       const qs = `lat=${lat}&lon=${lng}&radius=${opts.radiusM || 4000}` +
         `&city=${encodeURIComponent(label || "")}&limit=${rowLimit}&tier=${effTier}` +
         (opts.fresh ? "&fresh=1" : "") +
@@ -886,11 +892,12 @@ function Screener() {
       const j = await r.json();
       if (reqId !== liveReq.current) return null; // superseded by a newer request
       if (!j || !j.ok) throw new Error((j && j.error) || `HTTP ${r.status}`);
-      if (typeof j.ultraRemaining === "number") setUltraLeft(j.ultraRemaining);
+      if (typeof j.crawlsLeft === "number") setCrawlsLeft(j.crawlsLeft);
+      if (typeof j.cooldownMs === "number") setCooldownMs(j.cooldownMs);
       // Area not loaded and this tier can't crawl it: the server queued a
       // request instead. Show the pending state, don't replace current data.
       if (j.pending) {
-        setPendingArea({ label: label || j.label || "this area", requests: j.requests || 1, gated: j.gated, ultraLimited: !!j.ultraLimited });
+        setPendingArea({ label: label || j.label || "this area", requests: j.requests || 1, gated: j.gated, limited: j.limited || null });
         return j;
       }
       setPendingArea(null);
@@ -973,30 +980,14 @@ function Screener() {
       .finally(() => enrichBusy.current.delete(d.id));
   };
 
-  // Register a caching request for an area WITHOUT touching the current view.
-  // The server queues it (Free/Pro can't crawl), so the owner sees demand and
-  // the requester is notified once it's loaded. Returns the parsed response.
-  const submitLocationRequest = async (lat, lng, label) => {
-    try {
-      const headers = {};
-      if (session?.access_token) headers["authorization"] = `Bearer ${session.access_token}`;
-      const qs = `lat=${lat}&lon=${lng}&radius=4000&tier=${effTier}` +
-        `&city=${encodeURIComponent(label || "")}` +
-        (email ? `&email=${encodeURIComponent(email)}` : "");
-      const r = await fetch(`/api/businesses?${qs}`, Object.keys(headers).length ? { headers } : undefined);
-      const j = await r.json();
-      return j && j.ok ? j : null;
-    } catch { return null; }
-  };
-
-  // Locate: browser geolocation -> reverse geocode. What happens next depends
-  // on the tier:
-  //  · Logged out — never prompt for location; route straight to signup.
-  //  · Free/Pro — submit a caching request for the detected area and confirm
-  //    with a popup. The current view is left exactly as it is: no crawl, no
-  //    relabel, no nearest-first re-sort (it keeps showing the default cache).
-  //  · Ultra/Owner — switch to the detected area and load it (crawl or cache),
-  //    sorted nearest-first.
+  // Locate: browser geolocation -> reverse geocode, then load the detected
+  // area for the signed-in user. Row counts are tier-capped server-side (Free
+  // 5, Pro 20, Ultra/Owner full). Only relabel the view when data actually
+  // comes back: if the tier can't crawl right now (Free/Pro out of their daily
+  // crawls, Ultra on cooldown, or the area isn't cached and can't be crawled)
+  // the server queues it — we keep the current view and just show a "request
+  // submitted" popup, so the label never says one city while the rows show
+  // another. Logged-out visitors are routed to signup and never prompted.
   const locate = () => {
     if (locating) return;
     if (!authed && !admin) { goToLogin(); return; } // logged out: go to signup, don't ask for location
@@ -1018,19 +1009,15 @@ function Screener() {
         label = best.n;
       }
       setLocating(false);
-      if (canCrawl) {
-        // Ultra/Owner: switch to and load the detected area, nearest-first.
+      const j = await loadLive(lat, lng, label);
+      if (j && !j.pending) {
+        // Data came back — switch the view to the detected area, nearest-first.
         setGeo({ lat, lng, city: label });
         setSort({ key: "dist", dir: "asc" });
         setLocCity(label);
-        const j = await loadLive(lat, lng, label);
-        if (j && j.pending) setNotifyPopup({ label, requests: j.requests, ultraLimited: !!j.ultraLimited });
-      } else {
-        // Free/Pro: queue a caching request and confirm. Do NOT change the
-        // view — no setGeo/setSort/setLocCity/loadLive — so the background
-        // stays on the current cache instead of jumping to the detected city.
-        const j = await submitLocationRequest(lat, lng, label);
-        setNotifyPopup({ label, requests: (j && j.requests) || 1, submitted: true });
+      } else if (j && j.pending) {
+        // Queued (can't crawl right now): leave the current view untouched.
+        setNotifyPopup({ label, requests: j.requests, limited: j.limited, submitted: true });
       }
     }, (err) => {
       fail(err && err.code === 1
@@ -1132,11 +1119,10 @@ function Screener() {
     finally { setReqBusy(false); }
   };
 
-  // "Add custom location" (Pro + Ultra + Owner): geocode, then load it. If it's
-  // already cached the saved data shows instantly for everyone. If not:
-  //  · Owner  — force a fresh crawl.
-  //  · Ultra  — a live crawl (counts against the 2/day cap); if spent, queued.
-  //  · Pro    — queued to the owner's inbox, with a "you'll be notified" popup.
+  // "Add custom location" (Ultra + Owner only): geocode, then load it. If it's
+  // already cached the saved data shows instantly. Otherwise Owner force-crawls;
+  // Ultra runs a live crawl (10-min cooldown) or, if within the cooldown, the
+  // area is queued and a "you'll be notified" popup confirms it.
   const requestCustomLoc = async (q) => {
     const query = (q || "").trim();
     if (!query || reqBusy) return;
@@ -1151,7 +1137,7 @@ function Screener() {
       const j = await loadLive(hit.lat, hit.lon, hit.label, { fresh: isOwner });
       setCustomLoc(null); setLocSearch("");
       // Already cached / just crawled -> data is showing. Otherwise queued.
-      if (j && j.pending) setNotifyPopup({ label: hit.label, requests: j.requests, ultraLimited: !!j.ultraLimited });
+      if (j && j.pending) setNotifyPopup({ label: hit.label, requests: j.requests, limited: j.limited, submitted: true });
     } catch { flashGeo("Location lookup failed."); }
     finally { setReqBusy(false); }
   };
@@ -2014,7 +2000,10 @@ function Screener() {
         )}
         <div className="sysRead" style={{ ...S.sysRead, marginLeft: isPaid ? 0 : "auto" }} title="System status">
           <span style={S.sysK}>Crawls</span>
-          <span style={S.sysV}>{isOwner ? "Unlimited" : isUltra ? `${ultraLeft != null ? ultraLeft : 2} / day` : isPro ? "On request" : "0"}</span>
+          <span style={S.sysV}>{isOwner ? "Unlimited"
+            : isUltra ? (cooldownMs > 0 ? `${Math.ceil(cooldownMs / 60000)}m cooldown` : "Ready")
+            : isPro ? `${crawlsLeft != null ? crawlsLeft : 3} / day`
+            : `${crawlsLeft != null ? crawlsLeft : 1} / day`}</span>
           <span style={S.vruleSm} />
           <span style={S.sysK}>API</span>
           <button className="sysBtn" style={{ ...S.sysV, color: GREEN, background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: mono }}
@@ -2062,13 +2051,13 @@ function Screener() {
             <Icon k="target" size={12} />
             Request your location
           </button>
-          {/* Add custom location. Paid tiers can look up any place: Pro sends
-              a request, Ultra runs a live crawl (2/day), Owner crawls freely.
-              Free is prompted to upgrade. */}
+          {/* Add custom location — crawling ANY place is an Ultra feature
+              (Owner too). Free/Pro only get their own detected location, so
+              they're prompted to upgrade to Ultra. */}
           <button className="addCustomLink" style={S.addCustomLink}
             onClick={(e) => {
-              if (!isPaid) {
-                openUnlimited(e.currentTarget, { title: "Add custom location", body: "Look up no-website businesses in any city, not just where you are. Pro lets you request any location (we crawl it and notify you); Ultra runs live crawls on demand." });
+              if (!canCrawl) {
+                openUnlimited(e.currentTarget, { title: "Crawl any location", body: "Look up no-website businesses in any city, not just where you are. Free and Pro see their own detected area; Ultra crawls any location live on demand." });
                 return;
               }
               const r = e.currentTarget.getBoundingClientRect();
@@ -2275,8 +2264,10 @@ function Screener() {
         <div style={{ margin: "0 0 8px", padding: "9px 13px", border: `1px solid ${BLUE}`, borderRadius: 3, background: PANEL, fontSize: 11.5, color: TEXT, lineHeight: 1.55 }}>
           <span style={{ fontWeight: 700 }}>{pendingArea.label} isn&apos;t loaded yet.</span>{" "}
           <span style={{ color: MUTED }}>
-            {pendingArea.ultraLimited
+            {pendingArea.limited === "daily"
               ? "You've used today's live crawls. "
+              : pendingArea.limited === "cooldown"
+              ? "You're within the crawl cooldown. "
               : `Your request was logged — ${pendingArea.requests === 1 ? "you're the first to ask" : `${pendingArea.requests} people have asked`} for it. `}
             You&apos;ll be notified here and by email the moment it&apos;s ready — you don&apos;t have to do anything.
           </span>
@@ -2334,7 +2325,7 @@ function Screener() {
                       ) : pool.length === 0 ? (
                         <>The crawl found no qualifying no-website businesses in this area yet. Try a wider area or refresh.</>
                       ) : (
-                        <>No matches in your free slice of {freeCap}. Clear a filter, or pull more rows from the cache below.</>
+                        <>No matches in your {freeCap}-row slice{isPaid ? "" : " — upgrade to see more of your area"}. Clear a filter to widen it.</>
                       )}
                     </td>
                   </tr>
@@ -2408,7 +2399,7 @@ function Screener() {
                       {/* In-feed slot: the free tier cannot remove it. Cancel
                           (live after 5s) swaps the ad for an inline Go-unlimited
                           pitch; the pitch's Cancel swaps the ad back in. */}
-                      {showAds && i === 11 && rows.length > 14 && (
+                      {showAds && i === 3 && rows.length > 4 && (
                         <tr>
                           <td colSpan={isPaid ? 7 : 6} style={{ padding: "5px 12px", borderBottom: `1px solid ${LINE}` }}>
                             {adsLive ? (
@@ -2548,37 +2539,26 @@ function Screener() {
           )}
           </div>
 
-          {/* End-cap under the table: the pitch, always on. The free slice is
-              spent by design; the copy states the shared-snapshot mechanics and
-              sells the real-time cache as the edge over competitors. */}
-          {!isPaid && (
+          {/* End-cap under the table: the upgrade pitch. Free sees a small
+              slice of its own area; Pro sees more, Ultra crawls anywhere. */}
+          {effTier === "free" && (
           <div className="endCap" style={S.endCap}>
             <div style={{ fontSize: 12.5, color: TEXT, fontWeight: 700, marginBottom: 4 }}>
-              No more businesses without a website?
+              You&apos;re seeing {FREE_ROWS} leads in your area.
             </div>
             <div style={{ fontSize: 11.5, color: MUTED, marginBottom: 12, maxWidth: 460, lineHeight: 1.55 }}>
-              Get the real-time cache to edge out competitors working the same {snapLabel} snapshot.
+              Upgrade to work every no-website business near you — and to crawl any city you want.
             </div>
             <div style={{ ...S.edgeCompare, maxWidth: 460 }}>
-              <span style={{ color: MUTED, fontWeight: 700 }}>FREE</span>
-              <span style={{ color: MUTED }}>Same {snapLabel} rows for every visitor, picked over daily</span>
-              <span style={{ color: GREEN, fontWeight: 700 }}>PAID</span>
-              <span style={{ color: TEXT }}>Private crawl on demand, leads before they reach the cache</span>
+              <span style={{ color: MUTED, fontWeight: 700 }}>PRO</span>
+              <span style={{ color: TEXT }}>Up to {PRO_ROWS} leads in your area, no ads, exports</span>
+              <span style={{ color: GREEN, fontWeight: 700 }}>ULTRA</span>
+              <span style={{ color: TEXT }}>Crawl any location live, unlimited leads</span>
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              {!extra ? (
-                <button className="btnO" style={S.outBtn} onClick={openAd}>
-                  <Icon k="play" size={11} /> Watch a 1-min ad for 20 more
-                </button>
-              ) : (
-                <span style={{ fontSize: 11, color: FAINT }}>The demo cache slice ends at 40 rows.</span>
-              )}
               <button className="btnP" style={S.priBtn} onClick={(e) => openUnlimited(e.currentTarget)}>
-                Get the real-time cache
+                See plans
               </button>
-            </div>
-            <div style={{ fontSize: 10, color: FAINT, marginTop: 10 }}>
-              {`Results are a delayed cache, snapshotted ${snapLabel}. Real-time data is paid.`}
             </div>
           </div>
           )}
@@ -3327,7 +3307,7 @@ function Screener() {
           <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 8 }}>
             Look up no-website businesses in any city. If it&apos;s already loaded you&apos;ll see it instantly.
             {" "}{canCrawl
-              ? (isOwner ? "Otherwise we crawl it now." : `Otherwise we run a live crawl${ultraLeft != null ? ` (${ultraLeft} left today)` : " on demand"}.`)
+              ? (isOwner ? "Otherwise we crawl it now." : (cooldownMs > 0 ? `Otherwise we run a live crawl (ready in ~${Math.ceil(cooldownMs / 60000)}m).` : "Otherwise we run a live crawl on demand."))
               : " Otherwise we'll crawl it and notify you when it's ready."}
           </div>
           <input autoFocus value={locSearch} onChange={(e) => setLocSearch(e.target.value)}
@@ -3341,8 +3321,9 @@ function Screener() {
         </div>
       )}
 
-      {/* "You'll be notified" modal — shown after a Free/Pro location request,
-          or when an Ultra user has spent their daily live crawls. */}
+      {/* "You'll be notified" modal — shown when a location can't be crawled
+          right now (Free/Pro out of daily crawls, Ultra on cooldown, or the
+          area isn't cached and this tier can't crawl it). */}
       {notifyPopup && (
         <div style={{ ...S.overlay, zIndex: 97 }} onClick={() => setNotifyPopup(null)} role="dialog" aria-modal="true">
           <div style={{ ...S.adModal, width: 360, textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
@@ -3350,17 +3331,18 @@ function Screener() {
               <Icon k="bell" size={18} />
             </div>
             <div style={{ fontSize: 15, fontWeight: 700, color: TEXT, marginBottom: 6 }}>
-              {notifyPopup.ultraLimited ? "Daily crawls used up" : notifyPopup.submitted ? "Request submitted" : "We’re on it"}
+              {notifyPopup.limited === "daily" ? "Daily crawls used up"
+                : notifyPopup.limited === "cooldown" ? "Crawl cooldown"
+                : "Request submitted"}
             </div>
             <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.55, marginBottom: 14 }}>
-              {notifyPopup.ultraLimited ? (
-                <>You&apos;ve used today&apos;s live crawls for <strong style={{ color: TEXT }}>{notifyPopup.label}</strong>. It&apos;s queued — you&apos;ll be notified here and by email when it&apos;s ready, or run it yourself again tomorrow.</>
-              ) : notifyPopup.submitted ? (
+              {notifyPopup.limited === "daily" ? (
+                <>You&apos;ve used today&apos;s live crawls. <strong style={{ color: TEXT }}>{notifyPopup.label}</strong> is queued — you&apos;ll be notified here and by email when it&apos;s ready, or try again tomorrow.</>
+              ) : notifyPopup.limited === "cooldown" ? (
+                <><strong style={{ color: TEXT }}>{notifyPopup.label}</strong> is queued — you&apos;re within the crawl cooldown, so try again shortly, or you&apos;ll be notified here and by email the moment it&apos;s ready.</>
+              ) : (
                 <>Your request for <strong style={{ color: TEXT }}>{notifyPopup.label}</strong> was submitted — we&apos;ll be caching it soon and notify you here and by email the moment it&apos;s ready.
                 {notifyPopup.requests > 1 ? ` ${notifyPopup.requests} people have asked for it.` : ""}</>
-              ) : (
-                <><strong style={{ color: TEXT }}>{notifyPopup.label}</strong> isn&apos;t loaded yet. You&apos;ll be notified here and by email the moment it&apos;s ready
-                {notifyPopup.requests > 1 ? ` — ${notifyPopup.requests} people are waiting for it.` : "."}</>
               )}
             </div>
             <button className="btnP" style={{ ...S.priBtn, width: "100%", justifyContent: "center" }} onClick={() => setNotifyPopup(null)}>

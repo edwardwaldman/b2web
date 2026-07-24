@@ -20,18 +20,22 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 ## Tiers
 
-The screener has four tiers. See `.env.example` for the keys behind each.
+The screener has four tiers. Limits are configurable in `.env.example`.
 
-| Tier  | Price     | Can call the crawl API?                          |
-|-------|-----------|--------------------------------------------------|
-| Free  | —         | No. Detecting/requesting a location shows a "we'll notify you when it's ready" popup and queues the area. |
-| Pro   | $25/mo    | No live API. Requests any location; it goes to the owner's inbox and the requester is notified once it's loaded. |
-| Ultra | $200/mo   | Yes — live crawls on demand, capped at `ULTRA_DAILY_CALLS` per day (default 2). |
-| Owner | —         | Yes — uncapped. Password-gated operator/QA mode (`ADMIN_SECRET`), deliberately separate from Ultra. |
+| Tier  | Price   | Location | Businesses shown | Live crawl |
+|-------|---------|----------|------------------|------------|
+| Free  | —       | Their own (geolocated) | `FREE_ROWS` (5) | Their area only, `FREE_DAILY_CRAWLS`/day (1) |
+| Pro   | $25/mo  | Their own | `PRO_ROWS` (20) | Their area only, `PRO_DAILY_CRAWLS`/day (3) |
+| Ultra | $200/mo | **Any** location | Unlimited | Any location, one crawl every `ULTRA_COOLDOWN_MINUTES` (10) |
+| Owner | —       | Any | Unlimited | Uncapped. Password-gated operator/QA mode (`ADMIN_SECRET`) |
+
+Live crawls are **session-verified** (real profile tier) before spending any
+Google budget; a cache hit never counts against a tier's limit, and the global
+`GOOGLE_PLACES_DAILY_BUDGET` still hard-caps total spend. Logged-out visitors
+can't crawl — detecting a location sends them to signup.
 
 The bottom-right **TEST** switch (unlocked with the owner password) previews each
-tier — Free / Pro / Ultra / Owner — with that tier's real limits, so the Ultra
-2/day cap and the Free/Pro notify flow can be tested without owner powers.
+tier — Free / Pro / Ultra / Owner — with that tier's real limits and row caps.
 
 ## Real ads (Google AdSense)
 

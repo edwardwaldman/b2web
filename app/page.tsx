@@ -587,6 +587,9 @@ function Screener() {
   const isPro = effTier === "pro";       // request-only; the owner crawls for them
   const isPaid = isPro || isUltra || isOwner;
   const canCrawl = isUltra || isOwner;   // tiers that can trigger a live crawl
+  // Which client rate-limit governs the Refresh button: the owner gets the QA
+  // allowance (5/min), Ultra is throttled to once every 10 minutes.
+  const refreshRlName = isUltra ? "ultraRefresh" : "refresh";
   const showAds = effTier === "free";    // only free sees ads; every paid tier is ad-free
   const showLocks = !isPaid;             // padlocks only while on the free tier
   const noWall = admin || authed;        // signed-in users and owner/test mode never hit the wall
@@ -1014,15 +1017,23 @@ function Screener() {
     }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 300000 });
   };
 
-  // Refresh (owner): re-crawl the current area now. Newly-found businesses are
-  // still tagged (loadLive marks unseen rows with listedAgoMin); with the
-  // Listed column gone we sort them to the top by Featured after the crawl.
+  // Refresh (owner + Ultra): re-crawl the current area now. Owner is throttled
+  // at the QA rate (5/min); Ultra at once every 10 minutes (a live crawl that
+  // does NOT count against their 2/day new-area cap — the server enforces both
+  // limits authoritatively). Newly-found businesses are tagged (loadLive marks
+  // unseen rows with listedAgoMin) and sorted to the top by Featured.
   const refreshCache = () => {
     if (refreshing) return;
-    const wait = rlRetryIn("refresh");
-    if (wait > 0) { setRefreshLock(wait); flashGeo(`Rate limited. ${RL.refresh.max} refreshes per minute. Try again in ${rlFmt(wait)}`); return; }
-    rlHit("refresh");
-    setRefreshLock(rlRetryIn("refresh"));
+    const wait = rlRetryIn(refreshRlName);
+    if (wait > 0) {
+      setRefreshLock(wait);
+      flashGeo(isUltra
+        ? `Ultra can refresh once every 10 minutes. Try again in ${rlFmt(wait)}`
+        : `Rate limited. ${RL.refresh.max} refreshes per minute. Try again in ${rlFmt(wait)}`);
+      return;
+    }
+    rlHit(refreshRlName);
+    setRefreshLock(rlRetryIn(refreshRlName));
     setRefreshing(true);
     const lat = live ? live.lat : DEFAULT_LOC.lat, lng = live ? live.lng : DEFAULT_LOC.lon;
     const city = live ? live.city : DEFAULT_LOC.label;
@@ -1293,16 +1304,17 @@ function Screener() {
   useEffect(() => {
     if (refreshLock <= 0 && authLock <= 0) return;
     const t = setInterval(() => {
-      setRefreshLock(rlRetryIn("refresh"));
+      setRefreshLock(rlRetryIn(refreshRlName));
       setAuthLock(Math.max(rlRetryIn("auth"), rlRetryIn("code")));
     }, 1000);
     return () => clearInterval(t);
-  }, [refreshLock, authLock]);
+  }, [refreshLock, authLock, refreshRlName]);
 
   // Restore any lock still in force from a previous session
   useEffect(() => {
-    setRefreshLock(rlRetryIn("refresh"));
+    setRefreshLock(rlRetryIn(refreshRlName));
     setAuthLock(Math.max(rlRetryIn("auth"), rlRetryIn("code")));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Initial cache fetch when the page opens: the default niche area by default
@@ -2115,17 +2127,22 @@ function Screener() {
 
         <span className="cacheWrap" style={S.cacheWrap}>
           <button className={`refreshBtn${refreshing ? " spin" : ""}`}
-            style={{ ...S.refreshBtn, ...(isOwner && refreshLock > 0 ? { color: FAINT, cursor: "not-allowed" } : null) }}
-            disabled={isOwner && refreshLock > 0}
+            style={{ ...S.refreshBtn, ...(canCrawl && refreshLock > 0 ? { color: FAINT, cursor: "not-allowed" } : null) }}
+            disabled={canCrawl && refreshLock > 0}
             onClick={(e) => {
-              if (isOwner) { refreshCache(); return; }
-              openUnlimited(e.currentTarget, { title: "Real-time data", body: FEATURES["Real-time data"] });
+              // Owner + Ultra re-crawl live (Ultra throttled to 1/10min); Pro/Free
+              // can't live-crawl, so they get the upgrade popover (which only
+              // offers tiers above their own).
+              if (canCrawl) { refreshCache(); return; }
+              openUnlimited(e.currentTarget, { title: "Real-time refresh", body: "Re-crawl the area you're viewing on demand for the freshest data. Live refresh ships with Ultra (Pro requests new areas and we notify you when they load)." });
             }}
-            title={isOwner && refreshLock > 0 ? `Rate limited. Try again in ${rlFmt(refreshLock)}` : "Refresh: pull newly listed businesses"}
+            title={canCrawl && refreshLock > 0
+              ? `Rate limited. Try again in ${rlFmt(refreshLock)}`
+              : isUltra ? "Refresh: re-crawl this area (once every 10 min)" : "Refresh: pull newly listed businesses"}
             aria-label="Refresh the cache">
             <Icon k="refresh" size={12} />
           </button>
-          {isOwner && refreshLock > 0 && (
+          {canCrawl && refreshLock > 0 && (
             <span style={{ fontFamily: mono, fontSize: 9.5, color: AMBER, whiteSpace: "nowrap" }}>{rlFmt(refreshLock)}</span>
           )}
           {busy !== "idle" && (
@@ -2757,32 +2774,46 @@ function Screener() {
               <div style={{ fontSize: 10.5, color: MUTED, lineHeight: 1.5 }}>{up.feature.body}</div>
             </div>
           )}
-          <div className="tierGrid" style={S.tierGrid}>
-            {PLANS.map((pl) => {
-              const price = planPrice(pl, upBilling);
-              const picked = upTier === pl.id;
-              return (
-                <div key={pl.id} style={{ ...S.tierCard, ...(picked ? S.tierOn : null) }}>
-                  <div style={S.tierName}>{pl.name}</div>
-                  <div style={S.tierPrice}>
-                    {fmtPrice(price)}<span style={{ fontSize: 10, color: MUTED, fontWeight: 400 }}>{priceUnit(upBilling)}</span>
+          {(() => {
+            // Only ever offer tiers ABOVE the viewer's current one — never
+            // advertise a plan they already have (e.g. Pro seeing a Pro card).
+            const rank = { free: 0, pro: 1, ultra: 2, owner: 3 };
+            const upgrades = PLANS.filter((pl) => (rank[pl.id] ?? 9) > (rank[effTier] ?? 0));
+            if (!upgrades.length) return (
+              <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.55, padding: "6px 2px" }}>
+                You&apos;re on our top plan — everything is unlocked.
+              </div>
+            );
+            return (
+            <div className="tierGrid" style={{ ...S.tierGrid, ...(upgrades.length === 1 ? { gridTemplateColumns: "1fr" } : null) }}>
+              {upgrades.map((pl) => {
+                const price = planPrice(pl, upBilling);
+                const picked = upTier === pl.id;
+                const primary = pl.id === "pro" || upgrades.length === 1;
+                return (
+                  <div key={pl.id} style={{ ...S.tierCard, ...(picked ? S.tierOn : null) }}>
+                    <div style={S.tierName}>{pl.name}</div>
+                    <div style={S.tierPrice}>
+                      {fmtPrice(price)}<span style={{ fontSize: 10, color: MUTED, fontWeight: 400 }}>{priceUnit(upBilling)}</span>
+                    </div>
+                    <div style={{ fontSize: 9.5, color: FAINT, fontFamily: mono }}>
+                      {upBilling === "wk" ? "billed weekly" : "billed monthly"}
+                    </div>
+                    <div style={S.tierCalls}>{pl.calls}</div>
+                    {pl.feats.map((f) => (
+                      <div key={f} style={{ ...S.planRow, fontSize: 10.5 }}>{f}</div>
+                    ))}
+                    <button className={primary ? "btnP" : "btnO"}
+                      style={{ ...(primary ? S.priBtn : S.outBtn), width: "100%", marginTop: 9, justifyContent: "center", fontSize: 10.5, padding: "6px 8px" }}
+                      onClick={() => { setUpTier(pl.id); setUpErr(false); }}>
+                      Start 1-day free trial
+                    </button>
                   </div>
-                  <div style={{ fontSize: 9.5, color: FAINT, fontFamily: mono }}>
-                    {upBilling === "wk" ? "billed weekly" : "billed monthly"}
-                  </div>
-                  <div style={S.tierCalls}>{pl.calls}</div>
-                  {pl.feats.map((f) => (
-                    <div key={f} style={{ ...S.planRow, fontSize: 10.5 }}>{f}</div>
-                  ))}
-                  <button className={pl.id === "pro" ? "btnP" : "btnO"}
-                    style={{ ...(pl.id === "pro" ? S.priBtn : S.outBtn), width: "100%", marginTop: 9, justifyContent: "center", fontSize: 10.5, padding: "6px 8px" }}
-                    onClick={() => { setUpTier(pl.id); setUpErr(false); }}>
-                    Start 1-day free trial
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+            );
+          })()}
           {upTier && (() => {
             const pl = PLANS.find((x) => x.id === upTier);
             const price = planPrice(pl, upBilling);
@@ -3997,9 +4028,10 @@ function TourOverlay({ step, onNext, onBack, onSkip, email, setEmail, onLogin, o
 // a client-side limiter only shapes honest traffic, it does not stop an
 // attacker. Timestamps outside the window are dropped on every read.
 const RL = {
-  refresh: { max: 5, windowMs: 60000, label: "refreshes" },
-  auth:    { max: 5, windowMs: 300000, label: "sign in attempts" },
-  code:    { max: 5, windowMs: 300000, label: "code attempts" },
+  refresh:      { max: 5, windowMs: 60000, label: "refreshes" },      // owner QA
+  ultraRefresh: { max: 1, windowMs: 600000, label: "refreshes" },     // ultra: 1 / 10 min
+  auth:         { max: 5, windowMs: 300000, label: "sign in attempts" },
+  code:         { max: 5, windowMs: 300000, label: "code attempts" },
 };
 const rlRead = (name) => {
   try {
